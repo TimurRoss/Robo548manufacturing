@@ -45,7 +45,6 @@ def get_admin_orders_keyboard(stats: dict = None, archived_count: int = 0) -> In
     pending_count = stats.get('pending', 0)
     in_progress_count = stats.get('in_progress', 0)
     ready_count = stats.get('ready', 0)
-    rejected_count = stats.get('rejected', 0)
     
     builder.add(InlineKeyboardButton(
         text=f"Все заказы ({all_count} шт)" if all_count > 0 else "Все заказы",
@@ -64,15 +63,11 @@ def get_admin_orders_keyboard(stats: dict = None, archived_count: int = 0) -> In
         callback_data="admin_orders:ready"
     ))
     builder.add(InlineKeyboardButton(
-        text=f"Отклонен ({rejected_count} шт)" if rejected_count > 0 else "Отклонен",
-        callback_data="admin_orders:rejected"
-    ))
-    builder.add(InlineKeyboardButton(
         text=f"📦 Архив ({archived_count} шт)" if archived_count > 0 else "📦 Архив",
         callback_data="admin_orders:archived"
     ))
     builder.add(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back_to_main"))
-    builder.adjust(1, 2, 2, 1, 1)
+    builder.adjust(1, 2, 2, 1)
     return builder.as_markup()
 
 
@@ -115,8 +110,6 @@ def get_order_detail_keyboard(order_id: int, current_status: str, is_admin: bool
         elif current_status == "ready":
             builder.add(InlineKeyboardButton(text="В работу", callback_data=f"set_status:{order_id}:in_progress"))
             builder.add(InlineKeyboardButton(text="✅ Забрал", callback_data=f"admin_picked_up:{order_id}"))
-        elif current_status == "rejected":
-            builder.add(InlineKeyboardButton(text="Вернуть в работу", callback_data=f"set_status:{order_id}:in_progress"))
         
         builder.add(InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="admin_back_to_orders"))
         builder.adjust(1, 2, 1)

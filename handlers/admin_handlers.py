@@ -60,7 +60,6 @@ async def show_orders_menu(callback: CallbackQuery):
     stats_text += f"• В ожидании: {stats.get('pending', 0)} шт\n"
     stats_text += f"• В работе: {stats.get('in_progress', 0)} шт\n"
     stats_text += f"• Готов: {stats.get('ready', 0)} шт\n"
-    stats_text += f"• Отклонен: {stats.get('rejected', 0)} шт\n"
     stats_text += f"• Архив: {archived_count} шт\n"
     
     await callback.message.edit_text(
@@ -128,7 +127,6 @@ async def back_to_orders_list(callback: CallbackQuery):
     stats_text += f"• В ожидании: {stats.get('pending', 0)} шт\n"
     stats_text += f"• В работе: {stats.get('in_progress', 0)} шт\n"
     stats_text += f"• Готов: {stats.get('ready', 0)} шт\n"
-    stats_text += f"• Отклонен: {stats.get('rejected', 0)} шт\n"
     stats_text += f"• Архив: {archived_count} шт\n"
     
     await callback.message.edit_text(
@@ -322,28 +320,42 @@ async def reject_order_process(message: Message, state: FSMContext):
         await state.clear()
         return
     
-    # Обновляем статус заказа с причиной отклонения
-    success = await database.db.update_order_status(order_id, "rejected", rejection_reason)
+    # Получаем заказ перед архивированием для отправки уведомления
+    order = await database.db.get_order(order_id)
+    
+    # Перемещаем заказ в архив с причиной отклонения
+    success = await database.db.archive_order(order_id, rejection_reason)
     
     if not success:
         await message.answer("Ошибка при отклонении заказа")
         await state.clear()
         return
     
-    # Получаем обновленный заказ
+    # Обновляем заказ для отправки уведомления
     order = await database.db.get_order(order_id)
-    status_name = config.ORDER_STATUSES.get("rejected", "Отклонен")
+    order['rejection_reason'] = rejection_reason
     
     # Отправляем уведомление пользователю с причиной отклонения
-    await notify_user_order_status_changed(message.bot, order, status_name)
+    await notify_user_order_status_changed(message.bot, order, "Отклонен")
+    
+    # Получаем статистику для обновления меню
+    stats = await database.db.get_orders_statistics()
+    archived_orders = await database.db.get_archived_orders()
+    archived_count = len(archived_orders)
+    
+    stats_text = "📊 Статистика:\n"
+    stats_text += f"• Все заказы: {stats.get('all', 0)} шт\n"
+    stats_text += f"• В ожидании: {stats.get('pending', 0)} шт\n"
+    stats_text += f"• В работе: {stats.get('in_progress', 0)} шт\n"
+    stats_text += f"• Готов: {stats.get('ready', 0)} шт\n"
+    stats_text += f"• Архив: {archived_count} шт\n"
     
     await message.answer(
-        f"✅ Заказ №{order_id} отклонен.\n\n"
-        f"Причина: {rejection_reason}"
+        f"✅ Заказ №{order_id} отклонен и перемещен в архив.\n\n"
+        f"Причина: {rejection_reason}\n\n"
+        f"{stats_text}\nВыберите фильтр:",
+        reply_markup=keyboards.get_admin_orders_keyboard(stats, archived_count)
     )
-    
-    # Показываем обновленную информацию о заказе
-    await show_order_detail_after_update(message.bot, message.chat.id, order_id)
     
     await state.clear()
 
@@ -358,10 +370,6 @@ async def set_order_status(callback: CallbackQuery):
     _, order_id, status_code = callback.data.split(":")
     order_id = int(order_id)
     
-    # Не позволяем отклонять заказ через этот обработчик
-    if status_code == "rejected":
-        await callback.answer("Для отклонения используйте кнопку 'Отклонить'", show_alert=True)
-        return
     
     # Обновляем статус
     success = await database.db.update_order_status(order_id, status_code)
@@ -415,7 +423,6 @@ async def admin_picked_up_order(callback: CallbackQuery):
         stats_text += f"• В ожидании: {stats.get('pending', 0)} шт\n"
         stats_text += f"• В работе: {stats.get('in_progress', 0)} шт\n"
         stats_text += f"• Готов: {stats.get('ready', 0)} шт\n"
-        stats_text += f"• Отклонен: {stats.get('rejected', 0)} шт\n"
         stats_text += f"• Архив: {archived_count} шт\n"
         
         await callback.message.edit_text(

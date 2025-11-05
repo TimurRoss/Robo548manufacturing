@@ -363,13 +363,15 @@ class Database:
             return [dict(row) for row in rows]
 
     async def get_orders_statistics(self) -> Dict[str, int]:
-        """Получить статистику по заказам по статусам (без архива)"""
+        """Получить статистику по заказам по статусам (без архива и rejected)"""
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute("""
                 SELECT s.code, COUNT(o.id) as count
                 FROM statuses s
-                LEFT JOIN orders o ON s.id = o.status_id AND s.code != 'archived'
-                WHERE s.code != 'archived'
+                LEFT JOIN orders o ON s.id = o.status_id 
+                    AND s.code != 'archived' 
+                    AND s.code != 'rejected'
+                WHERE s.code != 'archived' AND s.code != 'rejected'
                 GROUP BY s.code
             """)
             rows = await cursor.fetchall()
@@ -410,7 +412,7 @@ class Database:
                     JOIN users u ON o.user_id = u.user_id
                     JOIN statuses s ON o.status_id = s.id
                     LEFT JOIN materials m ON o.material_id = m.id
-                    WHERE s.code != 'archived'
+                    WHERE s.code != 'archived' AND s.code != 'rejected'
                     ORDER BY o.created_at DESC
                 """)
             rows = await cursor.fetchall()
@@ -540,7 +542,7 @@ class Database:
             )
             await db.commit()
 
-    async def archive_order(self, order_id: int) -> bool:
+    async def archive_order(self, order_id: int, rejection_reason: Optional[str] = None) -> bool:
         """Переместить заказ в архив"""
         async with aiosqlite.connect(self.db_path) as db:
             # Получаем ID статуса "archived"
@@ -554,11 +556,17 @@ class Database:
             
             archived_status_id = status_row[0]
             
-            # Переводим заказ в архив
-            cursor = await db.execute(
-                "UPDATE orders SET status_id = ? WHERE id = ?",
-                (archived_status_id, order_id)
-            )
+            # Переводим заказ в архив, сохраняя причину отклонения если она есть
+            if rejection_reason:
+                cursor = await db.execute(
+                    "UPDATE orders SET status_id = ?, rejection_reason = ? WHERE id = ?",
+                    (archived_status_id, rejection_reason, order_id)
+                )
+            else:
+                cursor = await db.execute(
+                    "UPDATE orders SET status_id = ? WHERE id = ?",
+                    (archived_status_id, order_id)
+                )
             await db.commit()
             
             if cursor.rowcount > 0:

@@ -354,6 +354,26 @@ class Database:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
+    async def get_orders_statistics(self) -> Dict[str, int]:
+        """Получить статистику по заказам по статусам"""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("""
+                SELECT s.code, COUNT(o.id) as count
+                FROM statuses s
+                LEFT JOIN orders o ON s.id = o.status_id
+                GROUP BY s.code
+            """)
+            rows = await cursor.fetchall()
+            stats = {}
+            total = 0
+            for row in rows:
+                code = row[0]
+                count = row[1] if row[1] else 0
+                stats[code] = count
+                total += count
+            stats['all'] = total
+            return stats
+
     async def get_orders_by_status(self, status_code: Optional[str] = None) -> List[Dict[str, Any]]:
         """Получить заказы по статусу (или все, если status_code=None)"""
         async with aiosqlite.connect(self.db_path) as db:

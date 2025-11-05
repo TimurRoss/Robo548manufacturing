@@ -35,9 +35,34 @@ async def cmd_admin(message: Message):
     
     await message.answer(
         "🔧 Панель администратора\n\n"
-        "Выберите действие:",
-        reply_markup=keyboards.get_admin_orders_keyboard()
+        "Выберите раздел:",
+        reply_markup=keyboards.get_admin_main_keyboard()
     )
+
+
+@router.callback_query(F.data == "admin_orders_menu")
+async def show_orders_menu(callback: CallbackQuery):
+    """Показать меню фильтров заказов"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+    
+    # Получаем статистику по заказам
+    stats = await database.db.get_orders_statistics()
+    
+    # Формируем текст со статистикой
+    stats_text = "📊 Статистика:\n"
+    stats_text += f"• Все заказы: {stats.get('all', 0)} шт\n"
+    stats_text += f"• В ожидании: {stats.get('pending', 0)} шт\n"
+    stats_text += f"• В работе: {stats.get('in_progress', 0)} шт\n"
+    stats_text += f"• Готов: {stats.get('ready', 0)} шт\n"
+    stats_text += f"• Отклонен: {stats.get('rejected', 0)} шт\n"
+    
+    await callback.message.edit_text(
+        f"📦 Заказы\n\n{stats_text}\nВыберите фильтр:",
+        reply_markup=keyboards.get_admin_orders_keyboard(stats)
+    )
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("admin_orders:"))
@@ -57,7 +82,10 @@ async def show_orders_by_status(callback: CallbackQuery):
         status_text = config.ORDER_STATUSES.get(status_code, status_code)
     
     if not orders:
-        await callback.message.edit_text(f"Заказов со статусом '{status_text}' не найдено.")
+        await callback.message.edit_text(
+            f"Заказов со статусом '{status_text}' не найдено.",
+            reply_markup=keyboards.get_admin_orders_keyboard()
+        )
         await callback.answer()
         return
     
@@ -76,10 +104,35 @@ async def back_to_orders_list(callback: CallbackQuery):
         await callback.answer("У вас нет доступа", show_alert=True)
         return
     
+    # Получаем статистику по заказам
+    stats = await database.db.get_orders_statistics()
+    
+    # Формируем текст со статистикой
+    stats_text = "📊 Статистика:\n"
+    stats_text += f"• Все заказы: {stats.get('all', 0)} шт\n"
+    stats_text += f"• В ожидании: {stats.get('pending', 0)} шт\n"
+    stats_text += f"• В работе: {stats.get('in_progress', 0)} шт\n"
+    stats_text += f"• Готов: {stats.get('ready', 0)} шт\n"
+    stats_text += f"• Отклонен: {stats.get('rejected', 0)} шт\n"
+    
+    await callback.message.edit_text(
+        f"📦 Заказы\n\n{stats_text}\nВыберите фильтр:",
+        reply_markup=keyboards.get_admin_orders_keyboard(stats)
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_back_to_main")
+async def back_to_admin_main(callback: CallbackQuery):
+    """Вернуться в главное меню админ-панели"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+    
     await callback.message.edit_text(
         "🔧 Панель администратора\n\n"
-        "Выберите действие:",
-        reply_markup=keyboards.get_admin_orders_keyboard()
+        "Выберите раздел:",
+        reply_markup=keyboards.get_admin_main_keyboard()
     )
     await callback.answer()
 
@@ -373,19 +426,6 @@ async def manage_materials(callback: CallbackQuery):
     await callback.answer()
 
 
-@router.callback_query(F.data == "admin_back_to_menu")
-async def back_to_admin_menu(callback: CallbackQuery):
-    """Вернуться в главное меню админки"""
-    if not is_admin(callback.from_user.id):
-        await callback.answer("У вас нет доступа", show_alert=True)
-        return
-    
-    await callback.message.edit_text(
-        "🔧 Панель администратора\n\n"
-        "Выберите действие:",
-        reply_markup=keyboards.get_admin_orders_keyboard()
-    )
-    await callback.answer()
 
 
 @router.callback_query(F.data == "admin_add_material")

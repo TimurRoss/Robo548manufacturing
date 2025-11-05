@@ -69,24 +69,12 @@ def get_order_detail_keyboard(order_id: int, current_status: str) -> InlineKeybo
 
 
 def get_materials_keyboard(materials: list) -> InlineKeyboardMarkup:
-    """Клавиатура для выбора типа материала"""
+    """Клавиатура для выбора материала (цвет + тип)"""
     builder = InlineKeyboardBuilder()
     for material in materials:
         builder.add(InlineKeyboardButton(
             text=material['name'],
             callback_data=f"select_material:{material['id']}"
-        ))
-    builder.adjust(2)
-    return builder.as_markup()
-
-
-def get_colors_keyboard(colors: list) -> InlineKeyboardMarkup:
-    """Клавиатура для выбора цвета"""
-    builder = InlineKeyboardBuilder()
-    for color in colors:
-        builder.add(InlineKeyboardButton(
-            text=color['name'],
-            callback_data=f"select_color:{color['id']}"
         ))
     builder.adjust(2)
     return builder.as_markup()
@@ -104,12 +92,10 @@ def get_confirm_order_keyboard() -> InlineKeyboardMarkup:
 def get_manage_materials_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура для управления материалами"""
     builder = InlineKeyboardBuilder()
-    builder.add(InlineKeyboardButton(text="Добавить тип пластика", callback_data="admin_add_material"))
-    builder.add(InlineKeyboardButton(text="Удалить тип пластика", callback_data="admin_delete_material"))
-    builder.add(InlineKeyboardButton(text="Добавить цвет", callback_data="admin_add_color"))
-    builder.add(InlineKeyboardButton(text="Удалить цвет", callback_data="admin_delete_color"))
+    builder.add(InlineKeyboardButton(text="Добавить материал", callback_data="admin_add_material"))
+    builder.add(InlineKeyboardButton(text="Удалить материал", callback_data="admin_delete_material"))
     builder.add(InlineKeyboardButton(text="Назад", callback_data="admin_back_to_menu"))
-    builder.adjust(2, 2, 1)
+    builder.adjust(2, 1)
     return builder.as_markup()
 
 
@@ -120,19 +106,6 @@ def get_delete_materials_keyboard(materials: list) -> InlineKeyboardMarkup:
         builder.add(InlineKeyboardButton(
             text=material['name'],
             callback_data=f"delete_material:{material['id']}"
-        ))
-    builder.add(InlineKeyboardButton(text="Назад", callback_data="admin_manage_materials"))
-    builder.adjust(2, 1)
-    return builder.as_markup()
-
-
-def get_delete_colors_keyboard(colors: list) -> InlineKeyboardMarkup:
-    """Клавиатура для выбора цвета для удаления"""
-    builder = InlineKeyboardBuilder()
-    for color in colors:
-        builder.add(InlineKeyboardButton(
-            text=color['name'],
-            callback_data=f"delete_color:{color['id']}"
         ))
     builder.add(InlineKeyboardButton(text="Назад", callback_data="admin_manage_materials"))
     builder.adjust(2, 1)

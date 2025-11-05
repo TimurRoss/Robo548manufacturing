@@ -35,17 +35,10 @@ class Database:
                 )
             """)
 
-            # Таблица типов материалов
+            # Таблица материалов (объединенная: цвет + тип пластика)
+            # Пример: "зеленый PETG", "синий PLA"
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS materials (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT UNIQUE NOT NULL
-                )
-            """)
-
-            # Таблица цветов
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS colors (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT UNIQUE NOT NULL
                 )
@@ -58,7 +51,6 @@ class Database:
                     user_id INTEGER NOT NULL,
                     status_id INTEGER NOT NULL,
                     material_id INTEGER,
-                    color_id INTEGER,
                     part_name TEXT,
                     photo_path TEXT,
                     model_path TEXT,
@@ -67,17 +59,29 @@ class Database:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users(user_id),
                     FOREIGN KEY (status_id) REFERENCES statuses(id),
-                    FOREIGN KEY (material_id) REFERENCES materials(id),
-                    FOREIGN KEY (color_id) REFERENCES colors(id)
+                    FOREIGN KEY (material_id) REFERENCES materials(id)
                 )
             """)
 
             await db.commit()
 
+            # Миграция данных из старой структуры (если есть)
+            try:
+                await self._migrate_old_data(db)
+            except Exception as e:
+                logger.warning(f"Миграция данных: {e}")
+            
+            # Удаляем старую таблицу colors если она существует (после миграции)
+            try:
+                await db.execute("DROP TABLE IF EXISTS colors")
+                await db.commit()
+            except Exception as e:
+                logger.warning(f"Удаление таблицы colors: {e}")
+
             # Добавляем начальные статусы
             await self._init_statuses(db)
-            # Добавляем начальные материалы и цвета
-            await self._init_default_materials_and_colors(db)
+            # Добавляем начальные материалы (комбинации цвет+тип)
+            await self._init_default_materials(db)
 
             logger.info("База данных инициализирована")
 
@@ -96,20 +100,104 @@ class Database:
             )
         await db.commit()
 
-    async def _init_default_materials_and_colors(self, db):
-        """Инициализация начальных материалов и цветов"""
-        default_materials = ["PLA", "ABS", "PETG", "NYLON"]
+    async def _migrate_old_data(self, db):
+        """Миграция данных из старой структуры (если есть)"""
+        # Проверяем, есть ли старые данные в orders с color_id
+        try:
+            cursor = await db.execute("PRAGMA table_info(orders)")
+            columns = [row[1] for row in await cursor.fetchall()]
+            
+            if 'color_id' in columns:
+                # Если есть старые данные, создаем комбинации
+                # Получаем все комбинации material_id + color_id
+                cursor = await db.execute("""
+                    SELECT DISTINCT o.material_id, o.color_id, m.name as material_name, c.name as color_name
+                    FROM orders o
+                    LEFT JOIN materials m ON o.material_id = m.id
+                    LEFT JOIN colors c ON o.color_id = c.id
+                    WHERE o.material_id IS NOT NULL AND o.color_id IS NOT NULL
+                """)
+                combinations = await cursor.fetchall()
+                
+                # Создаем комбинации и обновляем orders
+                for material_id, color_id, material_name, color_name in combinations:
+                    if material_name and color_name:
+                        combined_name = f"{color_name.lower()} {material_name.upper()}"
+                        # Проверяем, существует ли уже такая комбинация
+                        cursor = await db.execute(
+                            "SELECT id FROM materials WHERE name = ?",
+                            (combined_name,)
+                        )
+                        existing = await cursor.fetchone()
+                        
+                        if not existing:
+                            # Добавляем новую комбинацию
+                            cursor = await db.execute(
+                                "INSERT INTO materials (name) VALUES (?)",
+                                (combined_name,)
+                            )
+                            new_material_id = cursor.lastrowid
+                        else:
+                            new_material_id = existing[0]
+                        
+                        # Обновляем заказы
+                        await db.execute(
+                            "UPDATE orders SET material_id = ?, color_id = NULL WHERE material_id = ? AND color_id = ?",
+                            (new_material_id, material_id, color_id)
+                        )
+                
+                # Удаляем столбец color_id из orders (SQLite не поддерживает DROP COLUMN напрямую)
+                # Создаем новую таблицу без color_id
+                await db.execute("""
+                    CREATE TABLE orders_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        status_id INTEGER NOT NULL,
+                        material_id INTEGER,
+                        part_name TEXT,
+                        photo_path TEXT,
+                        model_path TEXT,
+                        photo_caption TEXT,
+                        original_filename TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (user_id) REFERENCES users(user_id),
+                        FOREIGN KEY (status_id) REFERENCES statuses(id),
+                        FOREIGN KEY (material_id) REFERENCES materials(id)
+                    )
+                """)
+                await db.execute("""
+                    INSERT INTO orders_new 
+                    (id, user_id, status_id, material_id, part_name, photo_path, model_path, photo_caption, original_filename, created_at)
+                    SELECT id, user_id, status_id, material_id, part_name, photo_path, model_path, photo_caption, original_filename, created_at
+                    FROM orders
+                """)
+                await db.execute("DROP TABLE orders")
+                await db.execute("ALTER TABLE orders_new RENAME TO orders")
+                
+                await db.commit()
+                logger.info("Миграция данных выполнена успешно")
+        except Exception as e:
+            logger.warning(f"Ошибка при миграции: {e}")
+
+    async def _init_default_materials(self, db):
+        """Инициализация начальных материалов (комбинации цвет+тип)"""
+        default_materials = [
+            "белый PLA",
+            "черный PLA",
+            "красный PLA",
+            "синий PLA",
+            "зеленый PLA",
+            "желтый PLA",
+            "белый PETG",
+            "черный PETG",
+            "синий PETG",
+            "белый ABS",
+            "черный ABS"
+        ]
         for material in default_materials:
             await db.execute(
                 "INSERT OR IGNORE INTO materials (name) VALUES (?)",
                 (material,)
-            )
-
-        default_colors = ["Белый", "Черный", "Красный", "Синий", "Зеленый", "Желтый"]
-        for color in default_colors:
-            await db.execute(
-                "INSERT OR IGNORE INTO colors (name) VALUES (?)",
-                (color,)
             )
         await db.commit()
 
@@ -164,7 +252,6 @@ class Database:
         self,
         user_id: int,
         material_id: int,
-        color_id: int,
         part_name: str,
         photo_path: str,
         model_path: str,
@@ -182,9 +269,9 @@ class Database:
 
             cursor = await db.execute("""
                 INSERT INTO orders 
-                (user_id, status_id, material_id, color_id, part_name, photo_path, model_path, photo_caption, original_filename)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (user_id, status_id, material_id, color_id, part_name, photo_path, model_path, photo_caption, original_filename))
+                (user_id, status_id, material_id, part_name, photo_path, model_path, photo_caption, original_filename)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (user_id, status_id, material_id, part_name, photo_path, model_path, photo_caption, original_filename))
 
             await db.commit()
             order_id = cursor.lastrowid
@@ -199,13 +286,11 @@ class Database:
                 SELECT o.*, 
                        u.first_name, u.last_name, u.user_id,
                        s.code as status_code, s.name as status_name,
-                       m.name as material_name,
-                       c.name as color_name
+                       m.name as material_name
                 FROM orders o
                 JOIN users u ON o.user_id = u.user_id
                 JOIN statuses s ON o.status_id = s.id
                 LEFT JOIN materials m ON o.material_id = m.id
-                LEFT JOIN colors c ON o.color_id = c.id
                 WHERE o.id = ?
             """, (order_id,))
             order = await cursor.fetchone()
@@ -218,12 +303,10 @@ class Database:
             cursor = await db.execute("""
                 SELECT o.*, 
                        s.code as status_code, s.name as status_name,
-                       m.name as material_name,
-                       c.name as color_name
+                       m.name as material_name
                 FROM orders o
                 JOIN statuses s ON o.status_id = s.id
                 LEFT JOIN materials m ON o.material_id = m.id
-                LEFT JOIN colors c ON o.color_id = c.id
                 WHERE o.user_id = ?
                 ORDER BY o.created_at DESC
             """, (user_id,))
@@ -239,13 +322,11 @@ class Database:
                     SELECT o.*, 
                            u.first_name, u.last_name, u.user_id,
                            s.code as status_code, s.name as status_name,
-                           m.name as material_name,
-                           c.name as color_name
+                           m.name as material_name
                     FROM orders o
                     JOIN users u ON o.user_id = u.user_id
                     JOIN statuses s ON o.status_id = s.id
                     LEFT JOIN materials m ON o.material_id = m.id
-                    LEFT JOIN colors c ON o.color_id = c.id
                     WHERE s.code = ?
                     ORDER BY o.created_at DESC
                 """, (status_code,))
@@ -254,13 +335,11 @@ class Database:
                     SELECT o.*, 
                            u.first_name, u.last_name, u.user_id,
                            s.code as status_code, s.name as status_name,
-                           m.name as material_name,
-                           c.name as color_name
+                           m.name as material_name
                     FROM orders o
                     JOIN users u ON o.user_id = u.user_id
                     JOIN statuses s ON o.status_id = s.id
                     LEFT JOIN materials m ON o.material_id = m.id
-                    LEFT JOIN colors c ON o.color_id = c.id
                     ORDER BY o.created_at DESC
                 """)
             rows = await cursor.fetchall()
@@ -288,28 +367,21 @@ class Database:
             return True
 
     async def get_all_materials(self) -> List[Dict[str, Any]]:
-        """Получить все типы материалов"""
+        """Получить все материалы (комбинации цвет+тип)"""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM materials ORDER BY name")
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
-    async def get_all_colors(self) -> List[Dict[str, Any]]:
-        """Получить все цвета"""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute("SELECT * FROM colors ORDER BY name")
-            rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
-
     async def add_material(self, name: str) -> bool:
-        """Добавить новый тип материала"""
+        """Добавить новый материал (формат: "цвет тип", например "зеленый PETG")"""
         async with aiosqlite.connect(self.db_path) as db:
             try:
+                # Нормализуем название (первая буква цвета заглавная, тип заглавными)
                 await db.execute(
                     "INSERT INTO materials (name) VALUES (?)",
-                    (name,)
+                    (name.strip(),)
                 )
                 await db.commit()
                 logger.info(f"Добавлен материал: {name}")
@@ -318,35 +390,11 @@ class Database:
                 return False
 
     async def delete_material(self, material_id: int) -> bool:
-        """Удалить тип материала"""
+        """Удалить материал"""
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 "DELETE FROM materials WHERE id = ?",
                 (material_id,)
-            )
-            await db.commit()
-            return cursor.rowcount > 0
-
-    async def add_color(self, name: str) -> bool:
-        """Добавить новый цвет"""
-        async with aiosqlite.connect(self.db_path) as db:
-            try:
-                await db.execute(
-                    "INSERT INTO colors (name) VALUES (?)",
-                    (name,)
-                )
-                await db.commit()
-                logger.info(f"Добавлен цвет: {name}")
-                return True
-            except aiosqlite.IntegrityError:
-                return False
-
-    async def delete_color(self, color_id: int) -> bool:
-        """Удалить цвет"""
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute(
-                "DELETE FROM colors WHERE id = ?",
-                (color_id,)
             )
             await db.commit()
             return cursor.rowcount > 0
@@ -356,16 +404,6 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 "SELECT id FROM materials WHERE name = ?",
-                (name,)
-            )
-            row = await cursor.fetchone()
-            return row[0] if row else None
-
-    async def get_color_id_by_name(self, name: str) -> Optional[int]:
-        """Получить ID цвета по имени"""
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute(
-                "SELECT id FROM colors WHERE name = ?",
                 (name,)
             )
             row = await cursor.fetchone()

@@ -184,7 +184,7 @@ async def process_part_name(message: Message, state: FSMContext):
         return
     
     await message.answer(
-        "Выберите тип пластика:",
+        "Выберите материал (цвет + тип пластика):",
         reply_markup=keyboards.get_materials_keyboard(materials)
     )
     await state.set_state(states.OrderCreationStates.waiting_for_material)
@@ -192,50 +192,25 @@ async def process_part_name(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("select_material:"), states.OrderCreationStates.waiting_for_material)
 async def process_material_selection(callback: CallbackQuery, state: FSMContext):
-    """Обработка выбора типа материала"""
+    """Обработка выбора материала (цвет + тип)"""
     material_id = int(callback.data.split(":")[1])
     await state.update_data(material_id=material_id)
-    
-    # Получаем список цветов
-    colors = await database.db.get_all_colors()
-    if not colors:
-        await callback.message.answer("К сожалению, цвета временно недоступны. Обратитесь к администратору.")
-        await state.clear()
-        return
-    
-    await callback.message.edit_text(
-        "Выберите цвет:",
-        reply_markup=keyboards.get_colors_keyboard(colors)
-    )
-    await state.set_state(states.OrderCreationStates.waiting_for_color)
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("select_color:"), states.OrderCreationStates.waiting_for_color)
-async def process_color_selection(callback: CallbackQuery, state: FSMContext):
-    """Обработка выбора цвета"""
-    color_id = int(callback.data.split(":")[1])
-    await state.update_data(color_id=color_id)
     
     # Получаем все данные заказа
     data = await state.get_data()
     user_id = callback.from_user.id
     user = await database.db.get_user(user_id)
     
-    # Получаем названия материалов и цветов
+    # Получаем название материала
     materials = await database.db.get_all_materials()
-    colors = await database.db.get_all_colors()
-    
-    material_name = next((m['name'] for m in materials if m['id'] == data['material_id']), "Не указан")
-    color_name = next((c['name'] for c in colors if c['id'] == data['color_id']), "Не указан")
+    material_name = next((m['name'] for m in materials if m['id'] == material_id), "Не указан")
     
     # Формируем сводку заказа
     summary = (
         f"📋 Проверьте данные заказа:\n\n"
         f"👤 Заказчик: {user['first_name']} {user['last_name']}\n"
         f"📦 Название детали: {data['part_name']}\n"
-        f"🧪 Тип пластика: {material_name}\n"
-        f"🎨 Цвет: {color_name}\n"
+        f"🧪 Материал: {material_name}\n"
         f"📷 Фото: прикреплено\n"
         f"📁 Модель: {data['original_filename']}\n\n"
         f"Всё верно?"
@@ -260,7 +235,6 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
         order_id = await database.db.create_order(
             user_id=user_id,
             material_id=data['material_id'],
-            color_id=data['color_id'],
             part_name=data['part_name'],
             photo_path=data['photo_path'],
             model_path=data['model_path'],
@@ -329,14 +303,12 @@ async def show_user_order_detail(callback: CallbackQuery):
     
     status_name = order.get('status_name', 'Неизвестно')
     material_name = order.get('material_name', 'Не указан')
-    color_name = order.get('color_name', 'Не указан')
     
     order_text = (
         f"📋 Заказ №{order['id']}\n\n"
         f"📅 Дата создания: {order['created_at']}\n"
         f"📦 Название детали: {order['part_name']}\n"
-        f"🧪 Тип пластика: {material_name}\n"
-        f"🎨 Цвет: {color_name}\n"
+        f"🧪 Материал: {material_name}\n"
         f"📊 Статус: {status_name}\n"
     )
     

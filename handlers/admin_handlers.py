@@ -101,7 +101,6 @@ async def show_order_detail(callback: CallbackQuery):
     status_code = order.get('status_code', 'unknown')
     status_name = order.get('status_name', 'Неизвестно')
     material_name = order.get('material_name', 'Не указан')
-    color_name = order.get('color_name', 'Не указан')
     
     # Формируем текст с информацией о заказе
     order_text = (
@@ -110,8 +109,7 @@ async def show_order_detail(callback: CallbackQuery):
         f"👤 Заказчик: {order['first_name']} {order['last_name']}\n"
         f"🆔 Telegram ID: {order['user_id']}\n"
         f"📦 Название детали: {order['part_name']}\n"
-        f"🧪 Тип пластика: {material_name}\n"
-        f"🎨 Цвет: {color_name}\n"
+        f"🧪 Материал: {material_name}\n"
         f"📊 Статус: {status_name}\n"
     )
     
@@ -237,7 +235,6 @@ async def set_order_status(callback: CallbackQuery):
         current_status_code = order.get('status_code', 'unknown')
         current_status_name = order.get('status_name', 'Неизвестно')
         material_name = order.get('material_name', 'Не указан')
-        color_name = order.get('color_name', 'Не указан')
         
         order_text = (
             f"📋 Заказ №{order['id']}\n\n"
@@ -245,8 +242,7 @@ async def set_order_status(callback: CallbackQuery):
             f"👤 Заказчик: {order['first_name']} {order['last_name']}\n"
             f"🆔 Telegram ID: {order['user_id']}\n"
             f"📦 Название детали: {order['part_name']}\n"
-            f"🧪 Тип пластика: {material_name}\n"
-            f"🎨 Цвет: {color_name}\n"
+            f"🧪 Материал: {material_name}\n"
             f"📊 Статус: {current_status_name}\n"
         )
         
@@ -302,7 +298,13 @@ async def add_material_start(callback: CallbackQuery, state: FSMContext):
         await callback.answer("У вас нет доступа", show_alert=True)
         return
     
-    await callback.message.edit_text("Введите название нового типа пластика:")
+    await callback.message.edit_text(
+        "Введите название материала в формате: \"цвет тип\"\n\n"
+        "Примеры:\n"
+        "• зеленый PETG\n"
+        "• синий PLA\n"
+        "• красный ABS"
+    )
     await state.set_state(states.MaterialManagementStates.waiting_for_material_name)
     await callback.answer()
 
@@ -316,15 +318,15 @@ async def add_material_process(message: Message, state: FSMContext):
     
     material_name = message.text.strip()
     if not material_name:
-        await message.answer("Пожалуйста, введите корректное название:")
+        await message.answer("Пожалуйста, введите корректное название в формате \"цвет тип\":")
         return
     
     success = await database.db.add_material(material_name)
     
     if success:
-        await message.answer(f"✅ Тип пластика '{material_name}' добавлен!")
+        await message.answer(f"✅ Материал '{material_name}' добавлен!")
     else:
-        await message.answer(f"❌ Тип пластика '{material_name}' уже существует!")
+        await message.answer(f"❌ Материал '{material_name}' уже существует!")
     
     await state.clear()
 
@@ -344,7 +346,7 @@ async def delete_material_start(callback: CallbackQuery):
         return
     
     await callback.message.edit_text(
-        "Выберите тип пластика для удаления:",
+        "Выберите материал для удаления:",
         reply_markup=keyboards.get_delete_materials_keyboard(materials)
     )
     await callback.answer()
@@ -361,80 +363,7 @@ async def delete_material_process(callback: CallbackQuery):
     success = await database.db.delete_material(material_id)
     
     if success:
-        await callback.message.edit_text("✅ Тип пластика удален!")
-    else:
-        await callback.message.edit_text("❌ Ошибка при удалении!")
-    
-    await callback.answer()
-
-
-@router.callback_query(F.data == "admin_add_color")
-async def add_color_start(callback: CallbackQuery, state: FSMContext):
-    """Начать добавление цвета"""
-    if not is_admin(callback.from_user.id):
-        await callback.answer("У вас нет доступа", show_alert=True)
-        return
-    
-    await callback.message.edit_text("Введите название нового цвета:")
-    await state.set_state(states.MaterialManagementStates.waiting_for_color_name)
-    await callback.answer()
-
-
-@router.message(states.MaterialManagementStates.waiting_for_color_name)
-async def add_color_process(message: Message, state: FSMContext):
-    """Обработка добавления цвета"""
-    if not is_admin(message.from_user.id):
-        await state.clear()
-        return
-    
-    color_name = message.text.strip()
-    if not color_name:
-        await message.answer("Пожалуйста, введите корректное название:")
-        return
-    
-    success = await database.db.add_color(color_name)
-    
-    if success:
-        await message.answer(f"✅ Цвет '{color_name}' добавлен!")
-    else:
-        await message.answer(f"❌ Цвет '{color_name}' уже существует!")
-    
-    await state.clear()
-
-
-@router.callback_query(F.data == "admin_delete_color")
-async def delete_color_start(callback: CallbackQuery):
-    """Начать удаление цвета"""
-    if not is_admin(callback.from_user.id):
-        await callback.answer("У вас нет доступа", show_alert=True)
-        return
-    
-    colors = await database.db.get_all_colors()
-    
-    if not colors:
-        await callback.message.edit_text("Нет цветов для удаления.")
-        await callback.answer()
-        return
-    
-    await callback.message.edit_text(
-        "Выберите цвет для удаления:",
-        reply_markup=keyboards.get_delete_colors_keyboard(colors)
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("delete_color:"))
-async def delete_color_process(callback: CallbackQuery):
-    """Обработка удаления цвета"""
-    if not is_admin(callback.from_user.id):
-        await callback.answer("У вас нет доступа", show_alert=True)
-        return
-    
-    color_id = int(callback.data.split(":")[1])
-    success = await database.db.delete_color(color_id)
-    
-    if success:
-        await callback.message.edit_text("✅ Цвет удален!")
+        await callback.message.edit_text("✅ Материал удален!")
     else:
         await callback.message.edit_text("❌ Ошибка при удалении!")
     

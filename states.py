@@ -16,12 +16,10 @@ class OrderCreationStates(StatesGroup):
     waiting_for_model = State()
     waiting_for_part_name = State()
     waiting_for_material = State()
-    waiting_for_color = State()
     waiting_for_confirm = State()
 
 
 class MaterialManagementStates(StatesGroup):
     """Состояния для управления материалами (админ)"""
     waiting_for_material_name = State()
-    waiting_for_color_name = State()
 

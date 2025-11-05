@@ -320,6 +320,7 @@ async def show_user_order_detail(callback: CallbackQuery):
     
     status_name = order.get('status_name', 'Неизвестно')
     material_name = order.get('material_name', 'Не указан')
+    status_code = order.get('status_code', 'unknown')
     
     order_text = (
         f"📋 Заказ №{order['id']}\n\n"
@@ -329,6 +330,58 @@ async def show_user_order_detail(callback: CallbackQuery):
         f"📊 Статус: {status_name}\n"
     )
     
-    await callback.message.edit_text(order_text)
+    await callback.message.edit_text(
+        order_text,
+        reply_markup=keyboards.get_order_detail_keyboard(order_id, status_code, is_admin=False)
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("user_picked_up:"))
+async def user_picked_up_order(callback: CallbackQuery):
+    """Обработка нажатия кнопки 'Забрал' пользователем"""
+    order_id = int(callback.data.split(":")[1])
+    order = await database.db.get_order(order_id)
+    
+    if not order or order['user_id'] != callback.from_user.id:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+    
+    if order.get('status_code') != 'ready':
+        await callback.answer("Заказ еще не готов к выдаче", show_alert=True)
+        return
+    
+    # Перемещаем заказ в архив
+    success = await database.db.archive_order(order_id)
+    
+    if success:
+        await callback.message.edit_text(
+            f"✅ Заказ №{order_id} помечен как полученный и перемещен в архив.\n\n"
+            "Спасибо за использование нашего сервиса! 🎉"
+        )
+        logger.info(f"Пользователь {callback.from_user.id} пометил заказ №{order_id} как полученный (перемещен в архив)")
+    else:
+        await callback.answer("Ошибка при архивировании заказа", show_alert=True)
+    
+    await callback.answer()
+
+
+@router.callback_query(F.data == "user_back_to_orders")
+async def user_back_to_orders(callback: CallbackQuery):
+    """Вернуться к списку заказов пользователя"""
+    user_id = callback.from_user.id
+    
+    orders = await database.db.get_user_orders(user_id)
+    
+    if not orders:
+        await callback.message.edit_text("У вас пока нет заказов.")
+        await callback.answer()
+        return
+    
+    await callback.message.edit_text(
+        "Ваши заказы:\n\n"
+        "Выберите заказ для просмотра:",
+        reply_markup=keyboards.get_orders_list_keyboard(orders, prefix="my_order")
+    )
     await callback.answer()
 

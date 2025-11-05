@@ -69,6 +69,7 @@ class Database:
                     photo_caption TEXT,
                     original_filename TEXT,
                     rejection_reason TEXT,
+                    last_reminder_time TIMESTAMP,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users(user_id),
                     FOREIGN KEY (status_id) REFERENCES statuses(id),
@@ -76,16 +77,22 @@ class Database:
                 )
             """)
             
-            # Миграция: добавляем поле rejection_reason если его нет
+            # Миграция: добавляем поля если их нет
             try:
                 cursor = await db.execute("PRAGMA table_info(orders)")
                 columns = [row[1] for row in await cursor.fetchall()]
+                
                 if 'rejection_reason' not in columns:
                     await db.execute("ALTER TABLE orders ADD COLUMN rejection_reason TEXT")
                     await db.commit()
                     logger.info("Добавлено поле rejection_reason в таблицу orders")
+                
+                if 'last_reminder_time' not in columns:
+                    await db.execute("ALTER TABLE orders ADD COLUMN last_reminder_time TIMESTAMP")
+                    await db.commit()
+                    logger.info("Добавлено поле last_reminder_time в таблицу orders")
             except Exception as e:
-                logger.warning(f"Ошибка при добавлении поля rejection_reason: {e}")
+                logger.warning(f"Ошибка при добавлении полей в orders: {e}")
 
             await db.commit()
 
@@ -115,7 +122,8 @@ class Database:
             ("pending", "В ожидании"),
             ("in_progress", "В работе"),
             ("ready", "Готов"),
-            ("rejected", "Отклонен")
+            ("rejected", "Отклонен"),
+            ("archived", "Архив")
         ]
         for code, name in statuses:
             await db.execute(
@@ -355,12 +363,13 @@ class Database:
             return [dict(row) for row in rows]
 
     async def get_orders_statistics(self) -> Dict[str, int]:
-        """Получить статистику по заказам по статусам"""
+        """Получить статистику по заказам по статусам (без архива)"""
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute("""
                 SELECT s.code, COUNT(o.id) as count
                 FROM statuses s
-                LEFT JOIN orders o ON s.id = o.status_id
+                LEFT JOIN orders o ON s.id = o.status_id AND s.code != 'archived'
+                WHERE s.code != 'archived'
                 GROUP BY s.code
             """)
             rows = await cursor.fetchall()
@@ -375,7 +384,7 @@ class Database:
             return stats
 
     async def get_orders_by_status(self, status_code: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Получить заказы по статусу (или все, если status_code=None)"""
+        """Получить заказы по статусу (или все, если status_code=None, без архива)"""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             if status_code:
@@ -401,6 +410,7 @@ class Database:
                     JOIN users u ON o.user_id = u.user_id
                     JOIN statuses s ON o.status_id = s.id
                     LEFT JOIN materials m ON o.material_id = m.id
+                    WHERE s.code != 'archived'
                     ORDER BY o.created_at DESC
                 """)
             rows = await cursor.fetchall()
@@ -498,6 +508,177 @@ class Database:
             )
             row = await cursor.fetchone()
             return row[0] if row else None
+
+    async def get_ready_orders_for_reminder(self, hours: int = 4) -> List[Dict[str, Any]]:
+        """Получить заказы со статусом 'Готов', которым нужно отправить напоминание"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            # Получаем заказы со статусом "ready", которым не отправляли напоминание или последнее напоминание было более hours часов назад
+            cursor = await db.execute("""
+                SELECT o.*, 
+                       u.first_name, u.last_name, u.user_id, u.username,
+                       s.code as status_code, s.name as status_name,
+                       m.name as material_name
+                FROM orders o
+                JOIN users u ON o.user_id = u.user_id
+                JOIN statuses s ON o.status_id = s.id
+                LEFT JOIN materials m ON o.material_id = m.id
+                WHERE s.code = 'ready'
+                AND (o.last_reminder_time IS NULL 
+                     OR datetime(o.last_reminder_time, '+' || ? || ' hours') <= datetime('now'))
+                ORDER BY o.created_at DESC
+            """, (hours,))
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def update_last_reminder_time(self, order_id: int):
+        """Обновить время последнего напоминания для заказа"""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE orders SET last_reminder_time = datetime('now') WHERE id = ?",
+                (order_id,)
+            )
+            await db.commit()
+
+    async def archive_order(self, order_id: int) -> bool:
+        """Переместить заказ в архив"""
+        async with aiosqlite.connect(self.db_path) as db:
+            # Получаем ID статуса "archived"
+            cursor = await db.execute(
+                "SELECT id FROM statuses WHERE code = 'archived'"
+            )
+            status_row = await cursor.fetchone()
+            if not status_row:
+                logger.error("Статус 'archived' не найден в БД")
+                return False
+            
+            archived_status_id = status_row[0]
+            
+            # Переводим заказ в архив
+            cursor = await db.execute(
+                "UPDATE orders SET status_id = ? WHERE id = ?",
+                (archived_status_id, order_id)
+            )
+            await db.commit()
+            
+            if cursor.rowcount > 0:
+                logger.info(f"Заказ №{order_id} перемещен в архив")
+                
+                # Очищаем архив, если в нем больше 25 заказов
+                await self._cleanup_archive(db, archived_status_id)
+                
+                return True
+            return False
+
+    async def _cleanup_archive(self, db, archived_status_id: int):
+        """Очистить архив, оставив только последние 25 заказов"""
+        import config
+        
+        # Получаем все архивированные заказы, отсортированные по дате создания (новые первыми)
+        cursor = await db.execute("""
+            SELECT id, photo_path, model_path FROM orders 
+            WHERE status_id = ? 
+            ORDER BY created_at DESC
+        """, (archived_status_id,))
+        
+        archived_orders = await cursor.fetchall()
+        
+        # Если заказов больше 25, удаляем старые
+        if len(archived_orders) > config.ARCHIVE_MAX_SIZE:
+            orders_to_delete = archived_orders[config.ARCHIVE_MAX_SIZE:]
+            
+            for order in orders_to_delete:
+                order_id = order[0]
+                photo_path_str = order[1]
+                model_path_str = order[2]
+                
+                # Удаляем заказ из БД
+                await db.execute("DELETE FROM orders WHERE id = ?", (order_id,))
+                
+                # Удаляем файлы заказа
+                if photo_path_str:
+                    photo_path = Path(photo_path_str)
+                    if photo_path.exists():
+                        try:
+                            photo_path.unlink()
+                        except Exception as e:
+                            logger.warning(f"Не удалось удалить фото {photo_path}: {e}")
+                
+                if model_path_str:
+                    model_path = Path(model_path_str)
+                    if model_path.exists():
+                        try:
+                            model_path.unlink()
+                        except Exception as e:
+                            logger.warning(f"Не удалось удалить модель {model_path}: {e}")
+                
+                logger.info(f"Заказ №{order_id} удален из архива (превышен лимит)")
+            
+            await db.commit()
+            logger.info(f"Архив очищен: удалено {len(orders_to_delete)} старых заказов")
+
+    async def get_archived_orders(self, limit: int = None) -> List[Dict[str, Any]]:
+        """Получить архивированные заказы"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            query = """
+                SELECT o.*, 
+                       u.first_name, u.last_name, u.user_id, u.username,
+                       s.code as status_code, s.name as status_name,
+                       m.name as material_name
+                FROM orders o
+                JOIN users u ON o.user_id = u.user_id
+                JOIN statuses s ON o.status_id = s.id
+                LEFT JOIN materials m ON o.material_id = m.id
+                WHERE s.code = 'archived'
+                ORDER BY o.created_at DESC
+            """
+            if limit:
+                query += f" LIMIT {limit}"
+            
+            cursor = await db.execute(query)
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def delete_order(self, order_id: int) -> bool:
+        """Удалить заказ из БД (полное удаление)"""
+        async with aiosqlite.connect(self.db_path) as db:
+            # Получаем информацию о заказе для удаления файлов
+            cursor = await db.execute(
+                "SELECT photo_path, model_path FROM orders WHERE id = ?",
+                (order_id,)
+            )
+            order = await cursor.fetchone()
+            
+            if not order:
+                return False
+            
+            # Удаляем заказ
+            cursor = await db.execute(
+                "DELETE FROM orders WHERE id = ?",
+                (order_id,)
+            )
+            await db.commit()
+            
+            # Удаляем файлы заказа
+            if order[0]:  # photo_path
+                photo_path = Path(order[0])
+                if photo_path.exists():
+                    try:
+                        photo_path.unlink()
+                    except Exception as e:
+                        logger.warning(f"Не удалось удалить фото {photo_path}: {e}")
+            
+            if order[1]:  # model_path
+                model_path = Path(order[1])
+                if model_path.exists():
+                    try:
+                        model_path.unlink()
+                    except Exception as e:
+                        logger.warning(f"Не удалось удалить модель {model_path}: {e}")
+            
+            logger.info(f"Заказ №{order_id} удален из БД")
+            return cursor.rowcount > 0
 
 
 # Глобальный экземпляр базы данных

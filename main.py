@@ -10,6 +10,7 @@ import sys
 import config
 import database
 from handlers import user_handlers, admin_handlers
+from utils import send_reminder_about_ready_order
 from pathlib import Path
 
 
@@ -59,10 +60,46 @@ async def main():
     
     logger.info("Бот запущен и готов к работе")
     
+    # Запускаем фоновую задачу для отправки напоминаний
+    async def reminder_task():
+        """Фоновая задача для отправки напоминаний каждые 4 часа"""
+        # Первая проверка сразу после запуска (через 1 минуту)
+        await asyncio.sleep(60)
+        
+        while True:
+            try:
+                logger.info("Проверка заказов для отправки напоминаний...")
+                
+                # Получаем заказы, которым нужно отправить напоминание
+                orders = await database.db.get_ready_orders_for_reminder(hours=4)
+                
+                for order in orders:
+                    await send_reminder_about_ready_order(bot, order)
+                
+                if orders:
+                    logger.info(f"Отправлено напоминаний: {len(orders)}")
+                else:
+                    logger.debug("Заказов для напоминаний не найдено")
+                
+                # Ждем 4 часа перед следующей проверкой
+                await asyncio.sleep(4 * 3600)
+                    
+            except Exception as e:
+                logger.error(f"Ошибка в задаче напоминаний: {e}")
+                await asyncio.sleep(60)  # Ждем минуту перед следующей попыткой
+    
+    # Запускаем фоновую задачу
+    reminder_task_handle = asyncio.create_task(reminder_task())
+    
     # Запуск бота
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        reminder_task_handle.cancel()
+        try:
+            await reminder_task_handle
+        except asyncio.CancelledError:
+            pass
         await bot.session.close()
 
 

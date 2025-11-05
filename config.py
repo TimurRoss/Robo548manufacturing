@@ -38,8 +38,12 @@ ORDER_STATUSES = {
     "pending": "В ожидании",
     "in_progress": "В работе",
     "ready": "Готов",
-    "rejected": "Отклонен"
+    "rejected": "Отклонен",
+    "archived": "Архив"
 }
+
+# Максимальное количество заказов в архиве
+ARCHIVE_MAX_SIZE = 25
 
 # Допустимые расширения для 3D-моделей
 ALLOWED_MODEL_EXTENSIONS = {".stl", ".stp"}

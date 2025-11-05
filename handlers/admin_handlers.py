@@ -50,6 +50,10 @@ async def show_orders_menu(callback: CallbackQuery):
     # Получаем статистику по заказам
     stats = await database.db.get_orders_statistics()
     
+    # Получаем количество заказов в архиве
+    archived_orders = await database.db.get_archived_orders()
+    archived_count = len(archived_orders)
+    
     # Формируем текст со статистикой
     stats_text = "📊 Статистика:\n"
     stats_text += f"• Все заказы: {stats.get('all', 0)} шт\n"
@@ -57,10 +61,11 @@ async def show_orders_menu(callback: CallbackQuery):
     stats_text += f"• В работе: {stats.get('in_progress', 0)} шт\n"
     stats_text += f"• Готов: {stats.get('ready', 0)} шт\n"
     stats_text += f"• Отклонен: {stats.get('rejected', 0)} шт\n"
+    stats_text += f"• Архив: {archived_count} шт\n"
     
     await callback.message.edit_text(
         f"📦 Заказы\n\n{stats_text}\nВыберите фильтр:",
-        reply_markup=keyboards.get_admin_orders_keyboard(stats)
+        reply_markup=keyboards.get_admin_orders_keyboard(stats, archived_count)
     )
     await callback.answer()
 
@@ -77,14 +82,20 @@ async def show_orders_by_status(callback: CallbackQuery):
     if status_code == "all":
         orders = await database.db.get_orders_by_status(None)
         status_text = "Все заказы"
+    elif status_code == "archived":
+        orders = await database.db.get_archived_orders()
+        status_text = "Архив"
     else:
         orders = await database.db.get_orders_by_status(status_code)
         status_text = config.ORDER_STATUSES.get(status_code, status_code)
     
     if not orders:
+        stats = await database.db.get_orders_statistics()
+        archived_orders = await database.db.get_archived_orders()
+        archived_count = len(archived_orders)
         await callback.message.edit_text(
             f"Заказов со статусом '{status_text}' не найдено.",
-            reply_markup=keyboards.get_admin_orders_keyboard()
+            reply_markup=keyboards.get_admin_orders_keyboard(stats, archived_count)
         )
         await callback.answer()
         return
@@ -107,6 +118,10 @@ async def back_to_orders_list(callback: CallbackQuery):
     # Получаем статистику по заказам
     stats = await database.db.get_orders_statistics()
     
+    # Получаем количество заказов в архиве
+    archived_orders = await database.db.get_archived_orders()
+    archived_count = len(archived_orders)
+    
     # Формируем текст со статистикой
     stats_text = "📊 Статистика:\n"
     stats_text += f"• Все заказы: {stats.get('all', 0)} шт\n"
@@ -114,10 +129,11 @@ async def back_to_orders_list(callback: CallbackQuery):
     stats_text += f"• В работе: {stats.get('in_progress', 0)} шт\n"
     stats_text += f"• Готов: {stats.get('ready', 0)} шт\n"
     stats_text += f"• Отклонен: {stats.get('rejected', 0)} шт\n"
+    stats_text += f"• Архив: {archived_count} шт\n"
     
     await callback.message.edit_text(
         f"📦 Заказы\n\n{stats_text}\nВыберите фильтр:",
-        reply_markup=keyboards.get_admin_orders_keyboard(stats)
+        reply_markup=keyboards.get_admin_orders_keyboard(stats, archived_count)
     )
     await callback.answer()
 
@@ -191,7 +207,7 @@ async def show_order_detail(callback: CallbackQuery):
             await callback.bot.send_message(
                 callback.message.chat.id,
                 "Выберите действие:",
-                reply_markup=keyboards.get_order_detail_keyboard(order_id, status_code)
+                reply_markup=keyboards.get_order_detail_keyboard(order_id, status_code, is_admin=True)
             )
         except Exception as e:
             logger.error(f"Ошибка при отправке фото: {e}")
@@ -200,7 +216,7 @@ async def show_order_detail(callback: CallbackQuery):
             await callback.bot.send_message(
                 callback.message.chat.id,
                 "Выберите действие:",
-                reply_markup=keyboards.get_order_detail_keyboard(order_id, status_code)
+                reply_markup=keyboards.get_order_detail_keyboard(order_id, status_code, is_admin=True)
             )
     else:
         await callback.message.edit_text(order_text)
@@ -208,7 +224,7 @@ async def show_order_detail(callback: CallbackQuery):
         await callback.bot.send_message(
             callback.message.chat.id,
             "Выберите действие:",
-            reply_markup=keyboards.get_order_detail_keyboard(order_id, status_code)
+            reply_markup=keyboards.get_order_detail_keyboard(order_id, status_code, is_admin=True)
         )
     await callback.answer()
 
@@ -367,6 +383,53 @@ async def set_order_status(callback: CallbackQuery):
     await callback.answer(f"Статус изменен на '{status_name}'")
 
 
+@router.callback_query(F.data.startswith("admin_picked_up:"))
+async def admin_picked_up_order(callback: CallbackQuery):
+    """Обработка нажатия кнопки 'Забрал' администратором"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+    
+    order_id = int(callback.data.split(":")[1])
+    order = await database.db.get_order(order_id)
+    
+    if not order:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+    
+    if order.get('status_code') != 'ready':
+        await callback.answer("Заказ не в статусе 'Готов'", show_alert=True)
+        return
+    
+    # Перемещаем заказ в архив
+    success = await database.db.archive_order(order_id)
+    
+    if success:
+        # Получаем статистику для обновления меню
+        stats = await database.db.get_orders_statistics()
+        archived_orders = await database.db.get_archived_orders()
+        archived_count = len(archived_orders)
+        
+        stats_text = "📊 Статистика:\n"
+        stats_text += f"• Все заказы: {stats.get('all', 0)} шт\n"
+        stats_text += f"• В ожидании: {stats.get('pending', 0)} шт\n"
+        stats_text += f"• В работе: {stats.get('in_progress', 0)} шт\n"
+        stats_text += f"• Готов: {stats.get('ready', 0)} шт\n"
+        stats_text += f"• Отклонен: {stats.get('rejected', 0)} шт\n"
+        stats_text += f"• Архив: {archived_count} шт\n"
+        
+        await callback.message.edit_text(
+            f"✅ Заказ №{order_id} перемещен в архив.\n\n"
+            f"{stats_text}\nВыберите фильтр:",
+            reply_markup=keyboards.get_admin_orders_keyboard(stats, archived_count)
+        )
+        logger.info(f"Администратор {callback.from_user.id} пометил заказ №{order_id} как полученный (перемещен в архив)")
+    else:
+        await callback.answer("Ошибка при архивировании заказа", show_alert=True)
+    
+    await callback.answer()
+
+
 async def show_order_detail_after_update(bot: Bot, chat_id: int, order_id: int):
     """Показать обновленную информацию о заказе после изменения статуса"""
     order = await database.db.get_order(order_id)
@@ -407,7 +470,7 @@ async def show_order_detail_after_update(bot: Bot, chat_id: int, order_id: int):
     await bot.send_message(
         chat_id,
         "Выберите действие:",
-        reply_markup=keyboards.get_order_detail_keyboard(order_id, status_code)
+        reply_markup=keyboards.get_order_detail_keyboard(order_id, status_code, is_admin=True)
     )
 
 

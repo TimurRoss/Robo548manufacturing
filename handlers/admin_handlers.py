@@ -418,9 +418,30 @@ async def manage_materials(callback: CallbackQuery):
         await callback.answer("У вас нет доступа", show_alert=True)
         return
     
+    # Получаем материалы со статистикой использования
+    materials = await database.db.get_materials_with_usage_count()
+    
+    # Формируем текст со списком материалов
+    if materials:
+        materials_text = "📋 Доступные материалы:\n\n"
+        for material in materials:
+            usage_count = material.get('usage_count', 0)
+            materials_text += f"• {material['name']}"
+            if usage_count > 0:
+                materials_text += f" (использован {usage_count} раз"
+                if usage_count == 1:
+                    materials_text += ")"
+                elif usage_count < 5:
+                    materials_text += "а)"
+                else:
+                    materials_text += ")"
+            materials_text += "\n"
+        materials_text += f"\nВсего материалов: {len(materials)}"
+    else:
+        materials_text = "📋 Доступные материалы:\n\nМатериалы не добавлены."
+    
     await callback.message.edit_text(
-        "🔧 Управление материалами\n\n"
-        "Выберите действие:",
+        f"🔧 Управление материалами\n\n{materials_text}\n\nВыберите действие:",
         reply_markup=keyboards.get_manage_materials_keyboard()
     )
     await callback.answer()
@@ -461,7 +482,34 @@ async def add_material_process(message: Message, state: FSMContext):
     success = await database.db.add_material(material_name)
     
     if success:
-        await message.answer(f"✅ Материал '{material_name}' добавлен!")
+        # Получаем обновленный список материалов со статистикой
+        materials = await database.db.get_materials_with_usage_count()
+        
+        # Формируем текст со списком материалов
+        if materials:
+            materials_text = "📋 Доступные материалы:\n\n"
+            for material in materials:
+                usage_count = material.get('usage_count', 0)
+                materials_text += f"• {material['name']}"
+                if usage_count > 0:
+                    materials_text += f" (использован {usage_count} раз"
+                    if usage_count == 1:
+                        materials_text += ")"
+                    elif usage_count < 5:
+                        materials_text += "а)"
+                    else:
+                        materials_text += ")"
+                materials_text += "\n"
+            materials_text += f"\nВсего материалов: {len(materials)}"
+        else:
+            materials_text = "📋 Доступные материалы:\n\nМатериалы не добавлены."
+        
+        await message.answer(
+            f"✅ Материал '{material_name}' добавлен!\n\n"
+            f"{materials_text}\n\n"
+            "Выберите действие:",
+            reply_markup=keyboards.get_manage_materials_keyboard()
+        )
     else:
         await message.answer(f"❌ Материал '{material_name}' уже существует!")
     
@@ -500,7 +548,32 @@ async def delete_material_process(callback: CallbackQuery):
     success = await database.db.delete_material(material_id)
     
     if success:
-        await callback.message.edit_text("✅ Материал удален!")
+        # Получаем обновленный список материалов со статистикой
+        materials = await database.db.get_materials_with_usage_count()
+        
+        # Формируем текст со списком материалов
+        if materials:
+            materials_text = "📋 Доступные материалы:\n\n"
+            for material in materials:
+                usage_count = material.get('usage_count', 0)
+                materials_text += f"• {material['name']}"
+                if usage_count > 0:
+                    materials_text += f" (использован {usage_count} раз"
+                    if usage_count == 1:
+                        materials_text += ")"
+                    elif usage_count < 5:
+                        materials_text += "а)"
+                    else:
+                        materials_text += ")"
+                materials_text += "\n"
+            materials_text += f"\nВсего материалов: {len(materials)}"
+        else:
+            materials_text = "📋 Доступные материалы:\n\nМатериалы не добавлены."
+        
+        await callback.message.edit_text(
+            f"✅ Материал удален!\n\n{materials_text}\n\nВыберите действие:",
+            reply_markup=keyboards.get_manage_materials_keyboard()
+        )
     else:
         await callback.message.edit_text("❌ Ошибка при удалении!")
     

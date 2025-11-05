@@ -450,6 +450,20 @@ class Database:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
+    async def get_materials_with_usage_count(self) -> List[Dict[str, Any]]:
+        """Получить все материалы с количеством использований в заказах"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("""
+                SELECT m.id, m.name, COUNT(o.id) as usage_count
+                FROM materials m
+                LEFT JOIN orders o ON m.id = o.material_id
+                GROUP BY m.id, m.name
+                ORDER BY m.name
+            """)
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
     async def add_material(self, name: str) -> bool:
         """Добавить новый материал (формат: "цвет тип", например "зеленый PETG")"""
         async with aiosqlite.connect(self.db_path) as db:

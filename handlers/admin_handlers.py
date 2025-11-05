@@ -1,7 +1,7 @@
 """
 Обработчики для администраторов
 """
-from aiogram import Router, F
+from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
@@ -121,6 +121,9 @@ async def show_order_detail(callback: CallbackQuery):
     if order.get('photo_caption'):
         order_text += f"📝 Подпись к фото: {order['photo_caption']}\n"
     
+    if order.get('rejection_reason'):
+        order_text += f"\n❌ Причина отклонения: {order['rejection_reason']}\n"
+    
     # Отправляем фото, если есть, иначе редактируем текст
     if order.get('photo_path') and Path(order['photo_path']).exists():
         try:
@@ -210,6 +213,72 @@ async def download_model(callback: CallbackQuery):
         await callback.answer("Ошибка при отправке файла", show_alert=True)
 
 
+@router.callback_query(F.data.startswith("reject_order:"))
+async def reject_order_start(callback: CallbackQuery, state: FSMContext):
+    """Начать процесс отклонения заказа"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+    
+    order_id = int(callback.data.split(":")[1])
+    
+    # Сохраняем order_id в состоянии
+    await state.update_data(order_id=order_id)
+    
+    await callback.message.edit_text(
+        "❌ Отклонение заказа\n\n"
+        "Пожалуйста, укажите причину отклонения заказа:"
+    )
+    await state.set_state(states.OrderRejectionStates.waiting_for_rejection_reason)
+    await callback.answer()
+
+
+@router.message(states.OrderRejectionStates.waiting_for_rejection_reason)
+async def reject_order_process(message: Message, state: FSMContext):
+    """Обработка комментария отклонения"""
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        return
+    
+    rejection_reason = message.text.strip()
+    if not rejection_reason:
+        await message.answer("Пожалуйста, укажите причину отклонения:")
+        return
+    
+    data = await state.get_data()
+    order_id = data.get('order_id')
+    
+    if not order_id:
+        await message.answer("Ошибка: не найден ID заказа")
+        await state.clear()
+        return
+    
+    # Обновляем статус заказа с причиной отклонения
+    success = await database.db.update_order_status(order_id, "rejected", rejection_reason)
+    
+    if not success:
+        await message.answer("Ошибка при отклонении заказа")
+        await state.clear()
+        return
+    
+    # Получаем обновленный заказ
+    order = await database.db.get_order(order_id)
+    status_name = config.ORDER_STATUSES.get("rejected", "Отклонен")
+    
+    # Отправляем уведомление пользователю с причиной отклонения
+    await notify_user_order_status_changed(message.bot, order, status_name)
+    
+    await message.answer(
+        f"✅ Заказ №{order_id} отклонен.\n\n"
+        f"Причина: {rejection_reason}"
+    )
+    
+    # Показываем обновленную информацию о заказе
+    await show_order_detail_after_update(message.bot, message.chat.id, order_id)
+    
+    await state.clear()
+
+
 @router.callback_query(F.data.startswith("set_status:"))
 async def set_order_status(callback: CallbackQuery):
     """Изменить статус заказа"""
@@ -219,6 +288,11 @@ async def set_order_status(callback: CallbackQuery):
     
     _, order_id, status_code = callback.data.split(":")
     order_id = int(order_id)
+    
+    # Не позволяем отклонять заказ через этот обработчик
+    if status_code == "rejected":
+        await callback.answer("Для отклонения используйте кнопку 'Отклонить'", show_alert=True)
+        return
     
     # Обновляем статус
     success = await database.db.update_order_status(order_id, status_code)
@@ -234,41 +308,54 @@ async def set_order_status(callback: CallbackQuery):
     # Отправляем уведомление пользователю
     await notify_user_order_status_changed(callback.bot, order, status_name)
     
-    # Обновляем сообщение с заказом - получаем обновленный заказ и показываем его
-    if order:
-        # Используем обновленные данные из заказа
-        current_status_code = order.get('status_code', 'unknown')
-        current_status_name = order.get('status_name', 'Неизвестно')
-        material_name = order.get('material_name', 'Не указан')
-        
-        # Формируем информацию о пользователе
-        user_info = f"{order['first_name']} {order['last_name']}"
-        if order.get('username'):
-            user_info += f" (@{order['username']})"
-        user_info += f"\n🆔 Telegram ID: {order['user_id']}"
-        
-        order_text = (
-            f"📋 Заказ №{order['id']}\n\n"
-            f"📅 Дата создания: {order['created_at']}\n"
-            f"👤 Заказчик: {user_info}\n"
-            f"📦 Название детали: {order['part_name']}\n"
-            f"🧪 Материал: {material_name}\n"
-            f"📊 Статус: {current_status_name}\n"
-        )
-        
-        if order.get('photo_caption'):
-            order_text += f"📝 Подпись к фото: {order['photo_caption']}\n"
-        
-        # Отправляем обновленное сообщение
-        await callback.message.edit_text(
-            f"✅ Статус изменен на '{current_status_name}'\n\n{order_text}"
-        )
-        await callback.message.answer(
-            "Выберите действие:",
-            reply_markup=keyboards.get_order_detail_keyboard(order_id, current_status_code)
-        )
+    # Показываем обновленную информацию о заказе
+    await show_order_detail_after_update(callback.bot, callback.message.chat.id, order_id)
     
     await callback.answer(f"Статус изменен на '{status_name}'")
+
+
+async def show_order_detail_after_update(bot: Bot, chat_id: int, order_id: int):
+    """Показать обновленную информацию о заказе после изменения статуса"""
+    order = await database.db.get_order(order_id)
+    
+    if not order:
+        return
+    
+    status_code = order.get('status_code', 'unknown')
+    status_name = order.get('status_name', 'Неизвестно')
+    material_name = order.get('material_name', 'Не указан')
+    
+    # Формируем информацию о пользователе
+    user_info = f"{order['first_name']} {order['last_name']}"
+    if order.get('username'):
+        user_info += f" (@{order['username']})"
+    user_info += f"\n🆔 Telegram ID: {order['user_id']}"
+    
+    order_text = (
+        f"📋 Заказ №{order['id']}\n\n"
+        f"📅 Дата создания: {order['created_at']}\n"
+        f"👤 Заказчик: {user_info}\n"
+        f"📦 Название детали: {order['part_name']}\n"
+        f"🧪 Материал: {material_name}\n"
+        f"📊 Статус: {status_name}\n"
+    )
+    
+    if order.get('photo_caption'):
+        order_text += f"📝 Подпись к фото: {order['photo_caption']}\n"
+    
+    if order.get('rejection_reason'):
+        order_text += f"\n❌ Причина отклонения: {order['rejection_reason']}\n"
+    
+    # Отправляем обновленное сообщение
+    await bot.send_message(
+        chat_id,
+        f"✅ Статус изменен на '{status_name}'\n\n{order_text}"
+    )
+    await bot.send_message(
+        chat_id,
+        "Выберите действие:",
+        reply_markup=keyboards.get_order_detail_keyboard(order_id, status_code)
+    )
 
 
 @router.callback_query(F.data == "admin_manage_materials")

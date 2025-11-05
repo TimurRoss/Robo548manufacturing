@@ -23,3 +23,8 @@ class MaterialManagementStates(StatesGroup):
     """Состояния для управления материалами (админ)"""
     waiting_for_material_name = State()
 
+
+class OrderRejectionStates(StatesGroup):
+    """Состояния для отклонения заказа"""
+    waiting_for_rejection_reason = State()
+

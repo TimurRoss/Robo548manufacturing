@@ -56,12 +56,14 @@ def get_order_detail_keyboard(order_id: int, current_status: str) -> InlineKeybo
     
     if current_status == "pending":
         builder.add(InlineKeyboardButton(text="Принять в работу", callback_data=f"set_status:{order_id}:in_progress"))
-        builder.add(InlineKeyboardButton(text="Отклонить", callback_data=f"set_status:{order_id}:rejected"))
+        builder.add(InlineKeyboardButton(text="Отклонить", callback_data=f"reject_order:{order_id}"))
     elif current_status == "in_progress":
         builder.add(InlineKeyboardButton(text="Готов", callback_data=f"set_status:{order_id}:ready"))
         builder.add(InlineKeyboardButton(text="В ожидании", callback_data=f"set_status:{order_id}:pending"))
     elif current_status == "ready":
         builder.add(InlineKeyboardButton(text="В работу", callback_data=f"set_status:{order_id}:in_progress"))
+    elif current_status == "rejected":
+        builder.add(InlineKeyboardButton(text="Вернуть в работу", callback_data=f"set_status:{order_id}:in_progress"))
     
     builder.add(InlineKeyboardButton(text="Назад к списку", callback_data="admin_back_to_orders"))
     builder.adjust(1, 2, 1)

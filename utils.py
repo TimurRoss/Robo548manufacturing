@@ -14,6 +14,12 @@ async def notify_user_order_status_changed(bot: Bot, order: dict, status_name: s
         # Формируем сообщение в зависимости от статуса
         if status_name == "Готов":
             message = f"✅ Ваш заказ №{order_id} готов к выдаче!"
+        elif status_name == "Отклонен":
+            rejection_reason = order.get('rejection_reason', 'Не указана')
+            message = (
+                f"❌ Ваш заказ №{order_id} отклонен.\n\n"
+                f"Причина отклонения: {rejection_reason}"
+            )
         else:
             message = f"📋 Ваш заказ №{order_id} переведен в статус '{status_name}'."
         

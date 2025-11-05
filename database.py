@@ -68,12 +68,24 @@ class Database:
                     model_path TEXT,
                     photo_caption TEXT,
                     original_filename TEXT,
+                    rejection_reason TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users(user_id),
                     FOREIGN KEY (status_id) REFERENCES statuses(id),
                     FOREIGN KEY (material_id) REFERENCES materials(id)
                 )
             """)
+            
+            # Миграция: добавляем поле rejection_reason если его нет
+            try:
+                cursor = await db.execute("PRAGMA table_info(orders)")
+                columns = [row[1] for row in await cursor.fetchall()]
+                if 'rejection_reason' not in columns:
+                    await db.execute("ALTER TABLE orders ADD COLUMN rejection_reason TEXT")
+                    await db.commit()
+                    logger.info("Добавлено поле rejection_reason в таблицу orders")
+            except Exception as e:
+                logger.warning(f"Ошибка при добавлении поля rejection_reason: {e}")
 
             await db.commit()
 
@@ -374,7 +386,7 @@ class Database:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
-    async def update_order_status(self, order_id: int, status_code: str) -> bool:
+    async def update_order_status(self, order_id: int, status_code: str, rejection_reason: Optional[str] = None) -> bool:
         """Обновить статус заказа"""
         async with aiosqlite.connect(self.db_path) as db:
             # Получаем ID статуса
@@ -387,10 +399,25 @@ class Database:
                 return False
 
             status_id = status_row[0]
-            await db.execute(
-                "UPDATE orders SET status_id = ? WHERE id = ?",
-                (status_id, order_id)
-            )
+            # Обновляем статус и причину отклонения (если указана)
+            if rejection_reason:
+                # Если указана причина отклонения, сохраняем её
+                await db.execute(
+                    "UPDATE orders SET status_id = ?, rejection_reason = ? WHERE id = ?",
+                    (status_id, rejection_reason, order_id)
+                )
+            elif status_code != "rejected":
+                # Если статус не "отклонен", очищаем причину отклонения
+                await db.execute(
+                    "UPDATE orders SET status_id = ?, rejection_reason = NULL WHERE id = ?",
+                    (status_id, order_id)
+                )
+            else:
+                # Просто обновляем статус, не трогая причину отклонения
+                await db.execute(
+                    "UPDATE orders SET status_id = ? WHERE id = ?",
+                    (status_id, order_id)
+                )
             await db.commit()
             logger.info(f"Статус заказа №{order_id} изменен на {status_code}")
             return True

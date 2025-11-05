@@ -390,7 +390,14 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             if status_code:
-                query = """
+                # Для статусов "pending" и "in_progress" сортируем в хронологическом порядке (старые сверху)
+                # Для остальных - по убыванию (новые сначала)
+                if status_code in ['pending', 'in_progress']:
+                    order_by = "ORDER BY o.created_at ASC"
+                else:
+                    order_by = "ORDER BY o.created_at DESC"
+                
+                query = f"""
                     SELECT o.*, 
                            u.first_name, u.last_name, u.user_id, u.username,
                            s.code as status_code, s.name as status_name,
@@ -400,7 +407,7 @@ class Database:
                     JOIN statuses s ON o.status_id = s.id
                     LEFT JOIN materials m ON o.material_id = m.id
                     WHERE s.code = ?
-                    ORDER BY o.created_at DESC
+                    {order_by}
                 """
                 params = (status_code,)
             else:

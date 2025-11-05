@@ -1,0 +1,345 @@
+"""
+Обработчики для пользователей
+"""
+from aiogram import Router, F
+from aiogram.types import Message, CallbackQuery
+from aiogram.fsm.context import FSMContext
+from aiogram.filters import Command
+from pathlib import Path
+from loguru import logger
+
+import config
+import database
+import keyboards
+import states
+from utils import notify_user_order_status_changed
+
+
+router = Router()
+
+
+@router.message(Command("start"))
+async def cmd_start(message: Message, state: FSMContext):
+    """Обработчик команды /start"""
+    user_id = message.from_user.id
+    
+    # Проверяем, зарегистрирован ли пользователь
+    is_registered = await database.db.is_user_registered(user_id)
+    
+    if not is_registered:
+        # Начинаем процесс регистрации
+        await message.answer(
+            "Добро пожаловать! Для начала работы необходимо зарегистрироваться.\n\n"
+            "Введите вашу фамилию:"
+        )
+        await state.set_state(states.RegistrationStates.waiting_for_first_name)
+    else:
+        # Пользователь уже зарегистрирован
+        user = await database.db.get_user(user_id)
+        keyboard = keyboards.get_admin_menu_keyboard() if user_id in config.ADMIN_IDS else keyboards.get_main_menu_keyboard()
+        await message.answer(
+            f"Здравствуйте, {user['first_name']} {user['last_name']}!\n\n"
+            "Выберите действие:",
+            reply_markup=keyboard
+        )
+        await state.clear()
+
+
+@router.message(states.RegistrationStates.waiting_for_first_name)
+async def process_first_name(message: Message, state: FSMContext):
+    """Обработка фамилии при регистрации"""
+    first_name = message.text.strip()
+    if not first_name:
+        await message.answer("Пожалуйста, введите корректную фамилию:")
+        return
+    
+    await state.update_data(first_name=first_name)
+    await message.answer("Введите ваше имя:")
+    await state.set_state(states.RegistrationStates.waiting_for_last_name)
+
+
+@router.message(states.RegistrationStates.waiting_for_last_name)
+async def process_last_name(message: Message, state: FSMContext):
+    """Обработка имени при регистрации"""
+    last_name = message.text.strip()
+    if not last_name:
+        await message.answer("Пожалуйста, введите корректное имя:")
+        return
+    
+    data = await state.get_data()
+    first_name = data.get("first_name")
+    
+    # Сохраняем пользователя
+    user_id = message.from_user.id
+    await database.db.get_or_create_user(user_id, first_name, last_name)
+    
+    keyboard = keyboards.get_admin_menu_keyboard() if user_id in config.ADMIN_IDS else keyboards.get_main_menu_keyboard()
+    await message.answer(
+        f"Регистрация завершена! Добро пожаловать, {first_name} {last_name}!\n\n"
+        "Выберите действие:",
+        reply_markup=keyboard
+    )
+    await state.clear()
+
+
+@router.message(Command("new_order"))
+@router.message(F.text == "Создать заказ")
+async def cmd_new_order(message: Message, state: FSMContext):
+    """Обработчик команды создания заказа"""
+    user_id = message.from_user.id
+    
+    # Проверяем регистрацию
+    if not await database.db.is_user_registered(user_id):
+        await message.answer("Пожалуйста, сначала зарегистрируйтесь через /start")
+        return
+    
+    await message.answer(
+        "Начинаем создание заказа.\n\n"
+        "Загрузите фото вашей модели (скриншот, чертеж):"
+    )
+    await state.set_state(states.OrderCreationStates.waiting_for_photo)
+
+
+@router.message(states.OrderCreationStates.waiting_for_photo, F.photo)
+async def process_photo(message: Message, state: FSMContext):
+    """Обработка загруженного фото"""
+    photo = message.photo[-1]  # Берем фото с наибольшим разрешением
+    
+    # Скачиваем фото
+    photo_path = config.PHOTOS_DIR / f"{message.from_user.id}_{photo.file_id}.jpg"
+    photo_file = await message.bot.get_file(photo.file_id)
+    await message.bot.download_file(photo_file.file_path, photo_path)
+    
+    photo_caption = message.caption if message.caption else None
+    
+    await state.update_data(
+        photo_path=str(photo_path),
+        photo_caption=photo_caption
+    )
+    
+    await message.answer(
+        "Фото получено!\n\n"
+        "Теперь загрузите файл 3D-модели в формате STL или STP:"
+    )
+    await state.set_state(states.OrderCreationStates.waiting_for_model)
+
+
+@router.message(states.OrderCreationStates.waiting_for_photo)
+async def process_photo_invalid(message: Message):
+    """Обработка неверного формата фото"""
+    await message.answer("Пожалуйста, загрузите фото (изображение):")
+
+
+@router.message(states.OrderCreationStates.waiting_for_model, F.document)
+async def process_model(message: Message, state: FSMContext):
+    """Обработка загруженной 3D-модели"""
+    document = message.document
+    file_extension = Path(document.file_name).suffix.lower()
+    
+    if file_extension not in config.ALLOWED_MODEL_EXTENSIONS:
+        await message.answer(
+            "Неверный формат. Допустимы только STL и STP файлы.\n\n"
+            "Пожалуйста, загрузите файл с расширением .stl или .stp:"
+        )
+        return
+    
+    # Скачиваем файл модели
+    model_path = config.MODELS_DIR / f"{message.from_user.id}_{document.file_id}{file_extension}"
+    file = await message.bot.get_file(document.file_id)
+    await message.bot.download_file(file.file_path, model_path)
+    
+    original_filename = Path(document.file_name).stem
+    
+    await state.update_data(
+        model_path=str(model_path),
+        original_filename=document.file_name,
+        file_extension=file_extension
+    )
+    
+    await message.answer("Файл модели получен!\n\nВведите название детали:")
+    await state.set_state(states.OrderCreationStates.waiting_for_part_name)
+
+
+@router.message(states.OrderCreationStates.waiting_for_model)
+async def process_model_invalid(message: Message):
+    """Обработка неверного формата файла модели"""
+    await message.answer("Пожалуйста, загрузите файл 3D-модели (STL или STP):")
+
+
+@router.message(states.OrderCreationStates.waiting_for_part_name)
+async def process_part_name(message: Message, state: FSMContext):
+    """Обработка названия детали"""
+    part_name = message.text.strip()
+    if not part_name:
+        await message.answer("Пожалуйста, введите название детали:")
+        return
+    
+    await state.update_data(part_name=part_name)
+    
+    # Получаем список материалов
+    materials = await database.db.get_all_materials()
+    if not materials:
+        await message.answer("К сожалению, материалы временно недоступны. Обратитесь к администратору.")
+        await state.clear()
+        return
+    
+    await message.answer(
+        "Выберите тип пластика:",
+        reply_markup=keyboards.get_materials_keyboard(materials)
+    )
+    await state.set_state(states.OrderCreationStates.waiting_for_material)
+
+
+@router.callback_query(F.data.startswith("select_material:"), states.OrderCreationStates.waiting_for_material)
+async def process_material_selection(callback: CallbackQuery, state: FSMContext):
+    """Обработка выбора типа материала"""
+    material_id = int(callback.data.split(":")[1])
+    await state.update_data(material_id=material_id)
+    
+    # Получаем список цветов
+    colors = await database.db.get_all_colors()
+    if not colors:
+        await callback.message.answer("К сожалению, цвета временно недоступны. Обратитесь к администратору.")
+        await state.clear()
+        return
+    
+    await callback.message.edit_text(
+        "Выберите цвет:",
+        reply_markup=keyboards.get_colors_keyboard(colors)
+    )
+    await state.set_state(states.OrderCreationStates.waiting_for_color)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("select_color:"), states.OrderCreationStates.waiting_for_color)
+async def process_color_selection(callback: CallbackQuery, state: FSMContext):
+    """Обработка выбора цвета"""
+    color_id = int(callback.data.split(":")[1])
+    await state.update_data(color_id=color_id)
+    
+    # Получаем все данные заказа
+    data = await state.get_data()
+    user_id = callback.from_user.id
+    user = await database.db.get_user(user_id)
+    
+    # Получаем названия материалов и цветов
+    materials = await database.db.get_all_materials()
+    colors = await database.db.get_all_colors()
+    
+    material_name = next((m['name'] for m in materials if m['id'] == data['material_id']), "Не указан")
+    color_name = next((c['name'] for c in colors if c['id'] == data['color_id']), "Не указан")
+    
+    # Формируем сводку заказа
+    summary = (
+        f"📋 Проверьте данные заказа:\n\n"
+        f"👤 Заказчик: {user['first_name']} {user['last_name']}\n"
+        f"📦 Название детали: {data['part_name']}\n"
+        f"🧪 Тип пластика: {material_name}\n"
+        f"🎨 Цвет: {color_name}\n"
+        f"📷 Фото: прикреплено\n"
+        f"📁 Модель: {data['original_filename']}\n\n"
+        f"Всё верно?"
+    )
+    
+    await callback.message.edit_text(
+        summary,
+        reply_markup=keyboards.get_confirm_order_keyboard()
+    )
+    await state.set_state(states.OrderCreationStates.waiting_for_confirm)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "confirm_order", states.OrderCreationStates.waiting_for_confirm)
+async def confirm_order(callback: CallbackQuery, state: FSMContext):
+    """Подтверждение создания заказа"""
+    data = await state.get_data()
+    user_id = callback.from_user.id
+    
+    try:
+        # Создаем заказ в БД
+        order_id = await database.db.create_order(
+            user_id=user_id,
+            material_id=data['material_id'],
+            color_id=data['color_id'],
+            part_name=data['part_name'],
+            photo_path=data['photo_path'],
+            model_path=data['model_path'],
+            photo_caption=data.get('photo_caption'),
+            original_filename=data['original_filename']
+        )
+        
+        await callback.message.edit_text(
+            f"✅ Ваш заказ №{order_id} создан и принят в очередь!\n"
+            f"Статус: 'В ожидании'.\n\n"
+            f"Вы будете уведомлены об изменении статуса заказа."
+        )
+        
+        logger.info(f"Заказ №{order_id} создан пользователем {user_id}")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при создании заказа: {e}")
+        await callback.message.edit_text(
+            "❌ Произошла ошибка при создании заказа. Попробуйте позже."
+        )
+    
+    await state.clear()
+    await callback.answer()
+
+
+@router.callback_query(F.data == "cancel_order", states.OrderCreationStates.waiting_for_confirm)
+async def cancel_order(callback: CallbackQuery, state: FSMContext):
+    """Отмена создания заказа"""
+    await callback.message.edit_text("❌ Создание заказа отменено.")
+    await state.clear()
+    await callback.answer()
+
+
+@router.message(Command("my_orders"))
+@router.message(F.text == "Мои заказы")
+async def cmd_my_orders(message: Message):
+    """Обработчик команды просмотра заказов пользователя"""
+    user_id = message.from_user.id
+    
+    if not await database.db.is_user_registered(user_id):
+        await message.answer("Пожалуйста, сначала зарегистрируйтесь через /start")
+        return
+    
+    orders = await database.db.get_user_orders(user_id)
+    
+    if not orders:
+        await message.answer("У вас пока нет заказов.")
+        return
+    
+    await message.answer(
+        "Ваши заказы:\n\n"
+        "Выберите заказ для просмотра:",
+        reply_markup=keyboards.get_orders_list_keyboard(orders, prefix="my_order")
+    )
+
+
+@router.callback_query(F.data.startswith("my_order:"))
+async def show_user_order_detail(callback: CallbackQuery):
+    """Показать детали заказа пользователю"""
+    order_id = int(callback.data.split(":")[1])
+    order = await database.db.get_order(order_id)
+    
+    if not order or order['user_id'] != callback.from_user.id:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+    
+    status_name = order.get('status_name', 'Неизвестно')
+    material_name = order.get('material_name', 'Не указан')
+    color_name = order.get('color_name', 'Не указан')
+    
+    order_text = (
+        f"📋 Заказ №{order['id']}\n\n"
+        f"📅 Дата создания: {order['created_at']}\n"
+        f"📦 Название детали: {order['part_name']}\n"
+        f"🧪 Тип пластика: {material_name}\n"
+        f"🎨 Цвет: {color_name}\n"
+        f"📊 Статус: {status_name}\n"
+    )
+    
+    await callback.message.edit_text(order_text)
+    await callback.answer()
+

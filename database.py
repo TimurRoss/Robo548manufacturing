@@ -22,9 +22,21 @@ class Database:
                     user_id INTEGER PRIMARY KEY,
                     first_name TEXT NOT NULL,
                     last_name TEXT NOT NULL,
+                    username TEXT,
                     registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            
+            # Миграция: добавляем поле username если его нет
+            try:
+                cursor = await db.execute("PRAGMA table_info(users)")
+                columns = [row[1] for row in await cursor.fetchall()]
+                if 'username' not in columns:
+                    await db.execute("ALTER TABLE users ADD COLUMN username TEXT")
+                    await db.commit()
+                    logger.info("Добавлено поле username в таблицу users")
+            except Exception as e:
+                logger.warning(f"Ошибка при добавлении поля username: {e}")
 
             # Таблица статусов (предопределенные)
             await db.execute("""
@@ -201,7 +213,7 @@ class Database:
             )
         await db.commit()
 
-    async def get_or_create_user(self, user_id: int, first_name: str, last_name: str) -> Dict[str, Any]:
+    async def get_or_create_user(self, user_id: int, first_name: str, last_name: str, username: Optional[str] = None) -> Dict[str, Any]:
         """Получить или создать пользователя"""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -212,14 +224,31 @@ class Database:
             user = await cursor.fetchone()
 
             if user:
-                return dict(user)
+                # Преобразуем Row в словарь для работы
+                user_dict = dict(user)
+                # Обновляем username если он изменился
+                if username and username != user_dict.get('username'):
+                    await db.execute(
+                        "UPDATE users SET username = ? WHERE user_id = ?",
+                        (username, user_id)
+                    )
+                    await db.commit()
+                    logger.info(f"Обновлен username для пользователя {user_id}: {username}")
+                    # Получаем обновленного пользователя
+                    cursor = await db.execute(
+                        "SELECT * FROM users WHERE user_id = ?",
+                        (user_id,)
+                    )
+                    user = await cursor.fetchone()
+                    user_dict = dict(user)
+                return user_dict
 
             await db.execute(
-                "INSERT INTO users (user_id, first_name, last_name) VALUES (?, ?, ?)",
-                (user_id, first_name, last_name)
+                "INSERT INTO users (user_id, first_name, last_name, username) VALUES (?, ?, ?, ?)",
+                (user_id, first_name, last_name, username)
             )
             await db.commit()
-            logger.info(f"Создан новый пользователь: {user_id} - {first_name} {last_name}")
+            logger.info(f"Создан новый пользователь: {user_id} - {first_name} {last_name} (@{username if username else 'без username'})")
 
             cursor = await db.execute(
                 "SELECT * FROM users WHERE user_id = ?",
@@ -284,7 +313,7 @@ class Database:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("""
                 SELECT o.*, 
-                       u.first_name, u.last_name, u.user_id,
+                       u.first_name, u.last_name, u.user_id, u.username,
                        s.code as status_code, s.name as status_name,
                        m.name as material_name
                 FROM orders o
@@ -320,7 +349,7 @@ class Database:
             if status_code:
                 cursor = await db.execute("""
                     SELECT o.*, 
-                           u.first_name, u.last_name, u.user_id,
+                           u.first_name, u.last_name, u.user_id, u.username,
                            s.code as status_code, s.name as status_name,
                            m.name as material_name
                     FROM orders o
@@ -333,7 +362,7 @@ class Database:
             else:
                 cursor = await db.execute("""
                     SELECT o.*, 
-                           u.first_name, u.last_name, u.user_id,
+                           u.first_name, u.last_name, u.user_id, u.username,
                            s.code as status_code, s.name as status_name,
                            m.name as material_name
                     FROM orders o

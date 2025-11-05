@@ -22,6 +22,7 @@ router = Router()
 async def cmd_start(message: Message, state: FSMContext):
     """Обработчик команды /start"""
     user_id = message.from_user.id
+    username = message.from_user.username
     
     # Проверяем, зарегистрирован ли пользователь
     is_registered = await database.db.is_user_registered(user_id)
@@ -34,7 +35,13 @@ async def cmd_start(message: Message, state: FSMContext):
         )
         await state.set_state(states.RegistrationStates.waiting_for_first_name)
     else:
-        # Пользователь уже зарегистрирован
+        # Пользователь уже зарегистрирован - обновляем username если изменился
+        await database.db.get_or_create_user(
+            user_id, 
+            message.from_user.first_name or "", 
+            message.from_user.last_name or "", 
+            username
+        )
         user = await database.db.get_user(user_id)
         keyboard = keyboards.get_admin_menu_keyboard() if user_id in config.ADMIN_IDS else keyboards.get_main_menu_keyboard()
         await message.answer(
@@ -71,7 +78,8 @@ async def process_last_name(message: Message, state: FSMContext):
     
     # Сохраняем пользователя
     user_id = message.from_user.id
-    await database.db.get_or_create_user(user_id, first_name, last_name)
+    username = message.from_user.username  # Получаем username из Telegram
+    await database.db.get_or_create_user(user_id, first_name, last_name, username)
     
     keyboard = keyboards.get_admin_menu_keyboard() if user_id in config.ADMIN_IDS else keyboards.get_main_menu_keyboard()
     await message.answer(
@@ -87,11 +95,20 @@ async def process_last_name(message: Message, state: FSMContext):
 async def cmd_new_order(message: Message, state: FSMContext):
     """Обработчик команды создания заказа"""
     user_id = message.from_user.id
+    username = message.from_user.username
     
-    # Проверяем регистрацию
+    # Проверяем регистрацию и обновляем username
     if not await database.db.is_user_registered(user_id):
         await message.answer("Пожалуйста, сначала зарегистрируйтесь через /start")
         return
+    
+    # Обновляем username при создании заказа
+    await database.db.get_or_create_user(
+        user_id,
+        message.from_user.first_name or "",
+        message.from_user.last_name or "",
+        username
+    )
     
     await message.answer(
         "Начинаем создание заказа.\n\n"

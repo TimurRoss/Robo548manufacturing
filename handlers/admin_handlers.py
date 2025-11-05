@@ -102,12 +102,17 @@ async def show_order_detail(callback: CallbackQuery):
     status_name = order.get('status_name', 'Неизвестно')
     material_name = order.get('material_name', 'Не указан')
     
+    # Формируем информацию о пользователе
+    user_info = f"{order['first_name']} {order['last_name']}"
+    if order.get('username'):
+        user_info += f" (@{order['username']})"
+    user_info += f"\n🆔 Telegram ID: {order['user_id']}"
+    
     # Формируем текст с информацией о заказе
     order_text = (
         f"📋 Заказ №{order['id']}\n\n"
         f"📅 Дата создания: {order['created_at']}\n"
-        f"👤 Заказчик: {order['first_name']} {order['last_name']}\n"
-        f"🆔 Telegram ID: {order['user_id']}\n"
+        f"👤 Заказчик: {user_info}\n"
         f"📦 Название детали: {order['part_name']}\n"
         f"🧪 Материал: {material_name}\n"
         f"📊 Статус: {status_name}\n"
@@ -236,11 +241,16 @@ async def set_order_status(callback: CallbackQuery):
         current_status_name = order.get('status_name', 'Неизвестно')
         material_name = order.get('material_name', 'Не указан')
         
+        # Формируем информацию о пользователе
+        user_info = f"{order['first_name']} {order['last_name']}"
+        if order.get('username'):
+            user_info += f" (@{order['username']})"
+        user_info += f"\n🆔 Telegram ID: {order['user_id']}"
+        
         order_text = (
             f"📋 Заказ №{order['id']}\n\n"
             f"📅 Дата создания: {order['created_at']}\n"
-            f"👤 Заказчик: {order['first_name']} {order['last_name']}\n"
-            f"🆔 Telegram ID: {order['user_id']}\n"
+            f"👤 Заказчик: {user_info}\n"
             f"📦 Название детали: {order['part_name']}\n"
             f"🧪 Материал: {material_name}\n"
             f"📊 Статус: {current_status_name}\n"

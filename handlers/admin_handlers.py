@@ -51,8 +51,7 @@ async def show_orders_menu(callback: CallbackQuery):
     stats = await database.db.get_orders_statistics()
     
     # Получаем количество заказов в архиве
-    archived_orders = await database.db.get_archived_orders()
-    archived_count = len(archived_orders)
+    archived_count = await database.db.count_archived_orders()
     
     # Формируем текст со статистикой
     stats_text = "📊 Статистика:\n"
@@ -71,39 +70,93 @@ async def show_orders_menu(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("admin_orders:"))
 async def show_orders_by_status(callback: CallbackQuery):
-    """Показать заказы по статусу"""
+    """Показать заказы по статусу (первая страница)"""
     if not is_admin(callback.from_user.id):
         await callback.answer("У вас нет доступа", show_alert=True)
         return
     
     status_code = callback.data.split(":")[1]
     
+    # Проверяем, есть ли заказы в разделе
     if status_code == "all":
-        orders = await database.db.get_orders_by_status(None)
-        status_text = "Все заказы"
+        total_count = await database.db.count_orders_by_status(None)
     elif status_code == "archived":
-        orders = await database.db.get_archived_orders()
-        status_text = "Архив"
+        total_count = await database.db.count_archived_orders()
     else:
-        orders = await database.db.get_orders_by_status(status_code)
-        status_text = config.ORDER_STATUSES.get(status_code, status_code)
+        total_count = await database.db.count_orders_by_status(status_code)
     
-    if not orders:
-        stats = await database.db.get_orders_statistics()
-        archived_orders = await database.db.get_archived_orders()
-        archived_count = len(archived_orders)
-        await callback.message.edit_text(
-            f"Заказов со статусом '{status_text}' не найдено.",
-            reply_markup=keyboards.get_admin_orders_keyboard(stats, archived_count)
-        )
-        await callback.answer()
+    # Если раздел пуст, показываем предупреждение и не меняем сообщение
+    if total_count == 0:
+        if status_code == "all":
+            status_text = "Все заказы"
+        elif status_code == "archived":
+            status_text = "Архив"
+        else:
+            status_text = config.ORDER_STATUSES.get(status_code, status_code)
+        await callback.answer(f"Раздел '{status_text}' пуст", show_alert=True)
         return
     
+    await _show_orders_page(callback, status_code, page=0)
+    await callback.answer()
+
+
+async def _show_orders_page(callback: CallbackQuery, status_code: str, page: int = 0, orders_per_page: int = 6):
+    """Показать страницу с заказами"""
+    if status_code == "all":
+        total_count = await database.db.count_orders_by_status(None)
+        orders = await database.db.get_orders_by_status(None, limit=orders_per_page, offset=page * orders_per_page)
+        status_text = "Все заказы"
+    elif status_code == "archived":
+        total_count = await database.db.count_archived_orders()
+        orders = await database.db.get_archived_orders(limit=orders_per_page, offset=page * orders_per_page)
+        status_text = "Архив"
+    else:
+        total_count = await database.db.count_orders_by_status(status_code)
+        orders = await database.db.get_orders_by_status(status_code, limit=orders_per_page, offset=page * orders_per_page)
+        status_text = config.ORDER_STATUSES.get(status_code, status_code)
+    
+    if not orders and page == 0:
+        # Если нет заказов, показываем предупреждение, но не меняем сообщение
+        await callback.answer(f"Раздел '{status_text}' пуст", show_alert=True)
+        return
+    
+    total_pages = (total_count + orders_per_page - 1) // orders_per_page if total_count > 0 else 1
+    
+    start_num = page * orders_per_page + 1
+    end_num = min((page + 1) * orders_per_page, total_count)
+    
     await callback.message.edit_text(
-        f"📋 {status_text} ({len(orders)} заказов):\n\n"
+        f"📋 {status_text}\n"
+        f"Заказы {start_num}-{end_num} из {total_count}\n"
+        f"Страница {page + 1} из {total_pages}\n\n"
         "Выберите заказ для просмотра:",
-        reply_markup=keyboards.get_orders_list_keyboard(orders, prefix="admin_order")
+        reply_markup=keyboards.get_orders_list_keyboard(
+            orders, 
+            prefix="admin_order",
+            status_code=status_code,
+            current_page=page,
+            total_pages=total_pages
+        )
     )
+
+
+@router.callback_query(F.data.startswith("admin_orders_page:"))
+async def show_orders_page(callback: CallbackQuery):
+    """Показать конкретную страницу с заказами"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+    
+    _, status_code, page = callback.data.split(":")
+    page = int(page)
+    
+    await _show_orders_page(callback, status_code, page=page)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "noop")
+async def noop_handler(callback: CallbackQuery):
+    """Обработчик для пустых кнопок (без действия)"""
     await callback.answer()
 
 
@@ -118,8 +171,7 @@ async def back_to_orders_list(callback: CallbackQuery):
     stats = await database.db.get_orders_statistics()
     
     # Получаем количество заказов в архиве
-    archived_orders = await database.db.get_archived_orders()
-    archived_count = len(archived_orders)
+    archived_count = await database.db.count_archived_orders()
     
     # Формируем текст со статистикой
     stats_text = "📊 Статистика:\n"

@@ -71,15 +71,65 @@ def get_admin_orders_keyboard(stats: dict = None, archived_count: int = 0) -> In
     return builder.as_markup()
 
 
-def get_orders_list_keyboard(orders: list, prefix: str = "order") -> InlineKeyboardMarkup:
-    """Клавиатура со списком заказов"""
+def get_orders_list_keyboard(
+    orders: list, 
+    prefix: str = "order", 
+    status_code: str = None,
+    current_page: int = 0,
+    total_pages: int = 1
+) -> InlineKeyboardMarkup:
+    """Клавиатура со списком заказов с пагинацией"""
     builder = InlineKeyboardBuilder()
+    
+    # Добавляем заказы (в столбик - по 1 кнопке в ряд)
     for order in orders:
         order_id = order['id']
         status_name = order.get('status_name', 'Без статуса')
         text = f"Заказ №{order_id} ({status_name})"
         builder.add(InlineKeyboardButton(text=text, callback_data=f"{prefix}:{order_id}"))
-    builder.adjust(1)
+    
+    # Добавляем кнопки навигации если есть несколько страниц
+    nav_buttons_count = 0
+    if total_pages > 1:
+        nav_buttons = []
+        
+        # Кнопка "Назад"
+        if current_page > 0:
+            callback_data = f"admin_orders_page:{status_code}:{current_page - 1}"
+            nav_buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=callback_data))
+            nav_buttons_count += 1
+        else:
+            # Пустая кнопка для выравнивания
+            nav_buttons.append(InlineKeyboardButton(text=" ", callback_data="noop"))
+            nav_buttons_count += 1
+        
+        # Информация о странице
+        nav_buttons.append(InlineKeyboardButton(text=f"{current_page + 1}/{total_pages}", callback_data="noop"))
+        nav_buttons_count += 1
+        
+        # Кнопка "Вперед"
+        if current_page < total_pages - 1:
+            callback_data = f"admin_orders_page:{status_code}:{current_page + 1}"
+            nav_buttons.append(InlineKeyboardButton(text="Вперед ➡️", callback_data=callback_data))
+            nav_buttons_count += 1
+        else:
+            # Пустая кнопка для выравнивания
+            nav_buttons.append(InlineKeyboardButton(text=" ", callback_data="noop"))
+            nav_buttons_count += 1
+        
+        builder.add(*nav_buttons)
+    
+    # Кнопка "Назад к списку"
+    builder.add(InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="admin_back_to_orders"))
+    
+    # Настраиваем расположение: все заказы по 1 в ряд (столбик), навигация по 3 в ряд, кнопка "Назад" отдельно
+    orders_count = len(orders)
+    adjust_params = [1] * orders_count  # Каждый заказ по 1 кнопке в ряд
+    if nav_buttons_count > 0:
+        adjust_params.append(nav_buttons_count)  # Все кнопки навигации в один ряд
+    adjust_params.append(1)  # Кнопка "Назад к списку" отдельно
+    
+    builder.adjust(*adjust_params)
     return builder.as_markup()
 
 

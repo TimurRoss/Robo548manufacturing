@@ -385,12 +385,12 @@ class Database:
             stats['all'] = total
             return stats
 
-    async def get_orders_by_status(self, status_code: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def get_orders_by_status(self, status_code: Optional[str] = None, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
         """Получить заказы по статусу (или все, если status_code=None, без архива)"""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             if status_code:
-                cursor = await db.execute("""
+                query = """
                     SELECT o.*, 
                            u.first_name, u.last_name, u.user_id, u.username,
                            s.code as status_code, s.name as status_name,
@@ -401,9 +401,10 @@ class Database:
                     LEFT JOIN materials m ON o.material_id = m.id
                     WHERE s.code = ?
                     ORDER BY o.created_at DESC
-                """, (status_code,))
+                """
+                params = (status_code,)
             else:
-                cursor = await db.execute("""
+                query = """
                     SELECT o.*, 
                            u.first_name, u.last_name, u.user_id, u.username,
                            s.code as status_code, s.name as status_name,
@@ -414,9 +415,33 @@ class Database:
                     LEFT JOIN materials m ON o.material_id = m.id
                     WHERE s.code != 'archived' AND s.code != 'rejected'
                     ORDER BY o.created_at DESC
-                """)
+                """
+                params = ()
+            
+            if limit:
+                query += f" LIMIT {limit} OFFSET {offset}"
+            
+            cursor = await db.execute(query, params)
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
+    
+    async def count_orders_by_status(self, status_code: Optional[str] = None) -> int:
+        """Получить количество заказов по статусу"""
+        async with aiosqlite.connect(self.db_path) as db:
+            if status_code:
+                cursor = await db.execute("""
+                    SELECT COUNT(*) FROM orders o
+                    JOIN statuses s ON o.status_id = s.id
+                    WHERE s.code = ?
+                """, (status_code,))
+            else:
+                cursor = await db.execute("""
+                    SELECT COUNT(*) FROM orders o
+                    JOIN statuses s ON o.status_id = s.id
+                    WHERE s.code != 'archived' AND s.code != 'rejected'
+                """)
+            result = await cursor.fetchone()
+            return result[0] if result else 0
 
     async def update_order_status(self, order_id: int, status_code: str, rejection_reason: Optional[str] = None) -> bool:
         """Обновить статус заказа"""
@@ -625,7 +650,7 @@ class Database:
             await db.commit()
             logger.info(f"Архив очищен: удалено {len(orders_to_delete)} старых заказов")
 
-    async def get_archived_orders(self, limit: int = None) -> List[Dict[str, Any]]:
+    async def get_archived_orders(self, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
         """Получить архивированные заказы"""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -642,11 +667,22 @@ class Database:
                 ORDER BY o.created_at DESC
             """
             if limit:
-                query += f" LIMIT {limit}"
+                query += f" LIMIT {limit} OFFSET {offset}"
             
             cursor = await db.execute(query)
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
+    
+    async def count_archived_orders(self) -> int:
+        """Получить количество архивированных заказов"""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("""
+                SELECT COUNT(*) FROM orders o
+                JOIN statuses s ON o.status_id = s.id
+                WHERE s.code = 'archived'
+            """)
+            result = await cursor.fetchone()
+            return result[0] if result else 0
 
     async def delete_order(self, order_id: int) -> bool:
         """Удалить заказ из БД (полное удаление)"""

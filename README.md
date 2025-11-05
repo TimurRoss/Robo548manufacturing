@@ -54,12 +54,12 @@ pip install -r requirements.txt
    - Получите токен бота у [@BotFather](https://t.me/BotFather) в Telegram
    - Узнайте ваш Telegram user_id (можно у бота [@userinfobot](https://t.me/userinfobot))
    
-   Создайте файл `.env` в корне проекта (на основе `.env.example`):
+   Создайте файл `.env` в корне проекта (на основе `env.example`):
    ```bash
    # Скопируйте пример файла
-   copy .env.example .env  # Windows
+   copy env.example .env  # Windows
    # или
-   cp .env.example .env    # Linux/Mac
+   cp env.example .env    # Linux/Mac
    ```
    
    Затем отредактируйте `.env` и укажите свои данные:

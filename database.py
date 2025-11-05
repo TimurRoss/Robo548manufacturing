@@ -112,7 +112,7 @@ class Database:
             # Добавляем начальные статусы
             await self._init_statuses(db)
             # Добавляем начальные материалы (комбинации цвет+тип)
-            await self._init_default_materials(db)
+            # await self._init_default_materials(db)
 
             logger.info("База данных инициализирована")
 

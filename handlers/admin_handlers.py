@@ -240,6 +240,9 @@ async def show_order_detail(callback: CallbackQuery):
     if order.get('photo_caption'):
         order_text += f"📝 Подпись к фото: {order['photo_caption']}\n"
     
+    if order.get('comment'):
+        order_text += f"💬 Комментарий к заказу: {order['comment']}\n"
+    
     if order.get('rejection_reason'):
         order_text += f"\n❌ Причина отклонения: {order['rejection_reason']}\n"
     
@@ -530,6 +533,9 @@ async def show_order_detail_after_update(bot: Bot, chat_id: int, order_id: int):
     
     if order.get('photo_caption'):
         order_text += f"📝 Подпись к фото: {order['photo_caption']}\n"
+    
+    if order.get('comment'):
+        order_text += f"💬 Комментарий к заказу: {order['comment']}\n"
     
     if order.get('rejection_reason'):
         order_text += f"\n❌ Причина отклонения: {order['rejection_reason']}\n"

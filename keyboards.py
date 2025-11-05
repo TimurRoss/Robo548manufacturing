@@ -185,6 +185,14 @@ def get_materials_keyboard(materials: list) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def get_skip_comment_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура для пропуска комментария"""
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(text="Пропустить", callback_data="skip_comment"))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 def get_confirm_order_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура для подтверждения заказа"""
     builder = InlineKeyboardBuilder()

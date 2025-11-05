@@ -7,6 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
 from pathlib import Path
 from loguru import logger
+from typing import Union
 
 import config
 import database
@@ -213,13 +214,51 @@ async def process_material_selection(callback: CallbackQuery, state: FSMContext)
     material_id = int(callback.data.split(":")[1])
     await state.update_data(material_id=material_id)
     
-    # Получаем все данные заказа
+    await callback.message.edit_text(
+        "Хотите добавить комментарий к заказу?\n\n"
+        "Напишите ваш комментарий или нажмите кнопку 'Пропустить':",
+        reply_markup=keyboards.get_skip_comment_keyboard()
+    )
+    await state.set_state(states.OrderCreationStates.waiting_for_comment)
+    await callback.answer()
+
+
+@router.message(states.OrderCreationStates.waiting_for_comment)
+async def process_comment(message: Message, state: FSMContext):
+    """Обработка комментария к заказу"""
+    comment = message.text.strip()
+    if not comment:
+        await message.answer("Пожалуйста, введите комментарий или нажмите кнопку 'Пропустить':")
+        return
+    
+    await state.update_data(comment=comment)
+    await _show_order_summary(message, state)
+
+
+@router.callback_query(F.data == "skip_comment", states.OrderCreationStates.waiting_for_comment)
+async def skip_comment(callback: CallbackQuery, state: FSMContext):
+    """Пропустить комментарий"""
+    await state.update_data(comment=None)
+    await _show_order_summary(callback.message, state)
+    await callback.answer()
+
+
+async def _show_order_summary(message_or_callback, state: FSMContext):
+    """Показать сводку заказа для подтверждения"""
     data = await state.get_data()
-    user_id = callback.from_user.id
+    
+    if isinstance(message_or_callback, CallbackQuery):
+        message = message_or_callback.message
+        user_id = message_or_callback.from_user.id
+    else:
+        message = message_or_callback
+        user_id = message.from_user.id
+    
     user = await database.db.get_user(user_id)
     
     # Получаем название материала
     materials = await database.db.get_all_materials()
+    material_id = data['material_id']
     material_name = next((m['name'] for m in materials if m['id'] == material_id), "Не указан")
     
     # Формируем сводку заказа
@@ -229,16 +268,26 @@ async def process_material_selection(callback: CallbackQuery, state: FSMContext)
         f"📦 Название детали: {data['part_name']}\n"
         f"🧪 Материал: {material_name}\n"
         f"📷 Фото: прикреплено\n"
-        f"📁 Модель: {data['original_filename']}\n\n"
-        f"Всё верно?"
+        f"📁 Модель: {data['original_filename']}\n"
     )
     
-    await callback.message.edit_text(
-        summary,
-        reply_markup=keyboards.get_confirm_order_keyboard()
-    )
+    if data.get('comment'):
+        summary += f"💬 Комментарий: {data['comment']}\n"
+    
+    summary += "\nВсё верно?"
+    
+    if isinstance(message_or_callback, CallbackQuery):
+        await message.edit_text(
+            summary,
+            reply_markup=keyboards.get_confirm_order_keyboard()
+        )
+    else:
+        await message.answer(
+            summary,
+            reply_markup=keyboards.get_confirm_order_keyboard()
+        )
+    
     await state.set_state(states.OrderCreationStates.waiting_for_confirm)
-    await callback.answer()
 
 
 @router.callback_query(F.data == "confirm_order", states.OrderCreationStates.waiting_for_confirm)
@@ -256,7 +305,8 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
             photo_path=data['photo_path'],
             model_path=data['model_path'],
             photo_caption=data.get('photo_caption'),
-            original_filename=data['original_filename']
+            original_filename=data['original_filename'],
+            comment=data.get('comment')
         )
         
         await callback.message.edit_text(
@@ -344,6 +394,9 @@ async def show_user_order_detail(callback: CallbackQuery):
         f"🧪 Материал: {material_name}\n"
         f"📊 Статус: {status_name}\n"
     )
+    
+    if order.get('comment'):
+        order_text += f"💬 Комментарий: {order['comment']}\n"
     
     await callback.message.edit_text(
         order_text,

@@ -70,6 +70,7 @@ class Database:
                     original_filename TEXT,
                     rejection_reason TEXT,
                     last_reminder_time TIMESTAMP,
+                    comment TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users(user_id),
                     FOREIGN KEY (status_id) REFERENCES statuses(id),
@@ -91,6 +92,11 @@ class Database:
                     await db.execute("ALTER TABLE orders ADD COLUMN last_reminder_time TIMESTAMP")
                     await db.commit()
                     logger.info("Добавлено поле last_reminder_time в таблицу orders")
+                
+                if 'comment' not in columns:
+                    await db.execute("ALTER TABLE orders ADD COLUMN comment TEXT")
+                    await db.commit()
+                    logger.info("Добавлено поле comment в таблицу orders")
             except Exception as e:
                 logger.warning(f"Ошибка при добавлении полей в orders: {e}")
 
@@ -305,7 +311,8 @@ class Database:
         photo_path: str,
         model_path: str,
         photo_caption: Optional[str] = None,
-        original_filename: str = ""
+        original_filename: str = "",
+        comment: Optional[str] = None
     ) -> int:
         """Создать новый заказ"""
         async with aiosqlite.connect(self.db_path) as db:
@@ -318,9 +325,9 @@ class Database:
 
             cursor = await db.execute("""
                 INSERT INTO orders 
-                (user_id, status_id, material_id, part_name, photo_path, model_path, photo_caption, original_filename)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (user_id, status_id, material_id, part_name, photo_path, model_path, photo_caption, original_filename))
+                (user_id, status_id, material_id, part_name, photo_path, model_path, photo_caption, original_filename, comment)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (user_id, status_id, material_id, part_name, photo_path, model_path, photo_caption, original_filename, comment))
 
             await db.commit()
             order_id = cursor.lastrowid

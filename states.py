@@ -16,6 +16,7 @@ class OrderCreationStates(StatesGroup):
     waiting_for_model = State()
     waiting_for_part_name = State()
     waiting_for_material = State()
+    waiting_for_comment = State()
     waiting_for_confirm = State()
 
 

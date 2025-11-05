@@ -298,11 +298,24 @@ async def download_model(callback: CallbackQuery):
         await callback.answer("Файл модели не найден", show_alert=True)
         return
     
-    # Формируем новое имя файла по шаблону
-    # {НомерЗаказа}_{Фамилия}_{Имя}_{НазваниеДетали}.stp (или .stl)
-    file_extension = model_path.suffix
-    part_name = order['part_name'] or order['original_filename'].replace(file_extension, '')
-    new_filename = f"{order['id']}_{order['last_name']}_{order['first_name']}_{part_name}{file_extension}"
+    # Формируем новое имя файла по шаблону: {order_id}_{last_name}_{first_name}_{part_name}.stl
+    file_extension = model_path.suffix.lower()  # .stl или .stp
+    part_name = order['part_name'] or (order.get('original_filename', '').replace(file_extension, '').replace('.stl', '').replace('.stp', ''))
+    
+    # Очищаем имена от недопустимых символов для файловых имен
+    import re
+    def clean_filename(name):
+        # Заменяем пробелы и недопустимые символы на подчеркивания
+        name = re.sub(r'[<>:"/\\|?*]', '_', name)
+        name = name.replace(' ', '_')
+        return name
+    
+    order_id = order['id']
+    last_name = clean_filename(order['last_name'])
+    first_name = clean_filename(order['first_name'])
+    part_name_clean = clean_filename(part_name)
+    
+    new_filename = f"{order_id}_{last_name}_{first_name}_{part_name_clean}{file_extension}"
     
     try:
         # Создаем временный файл с новым именем
@@ -325,7 +338,7 @@ async def download_model(callback: CallbackQuery):
         temp_file.unlink()
         
         await callback.answer("Файл отправлен")
-        logger.info(f"Администратор {callback.from_user.id} скачал модель для заказа №{order_id}")
+        logger.info(f"Администратор {callback.from_user.id} скачал модель для заказа №{order_id} с именем {new_filename}")
         
     except Exception as e:
         logger.error(f"Ошибка при скачивании модели: {e}")

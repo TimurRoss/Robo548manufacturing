@@ -285,6 +285,21 @@ async def cancel_order(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+@router.message(Command("help"))
+async def cmd_help(message: Message):
+    """Обработчик команды /help"""
+    contacts_text = "📞 Контакты технических специалистов:\n\n"
+    
+    for i, contact in enumerate(config.TECH_SUPPORT_CONTACTS, 1):
+        contacts_text += f"{i}. {contact['name']}\n"
+        contacts_text += f"   {contact['role']}\n"
+        contacts_text += f"   {contact['contact']}\n\n"
+    
+    contacts_text += "Если у вас возникли проблемы, обратитесь к одному из специалистов."
+    
+    await message.answer(contacts_text)
+
+
 @router.message(Command("my_orders"))
 @router.message(F.text == "Мои заказы")
 async def cmd_my_orders(message: Message):

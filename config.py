@@ -48,3 +48,9 @@ ARCHIVE_MAX_SIZE = 25
 # Допустимые расширения для 3D-моделей
 ALLOWED_MODEL_EXTENSIONS = {".stl", ".stp"}
 
+# Контакты технических специалистов для решения проблем
+TECH_SUPPORT_CONTACTS = [
+    {"name": "Россихн Тимур", "role": "Технический специалист", "contact": "@TimurRoss"},
+    {"name": "Виктор Николаев", "role": "Технический специалист", "contact": "@vdnrobo"}
+]
+

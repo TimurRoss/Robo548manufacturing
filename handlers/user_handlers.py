@@ -135,10 +135,21 @@ async def process_photo(message: Message, state: FSMContext):
         photo_caption=photo_caption
     )
     
-    await message.answer(
-        "Фото получено!\n\n"
-        "Теперь загрузите файл 3D-модели в формате STL или STP:"
-    )
+    data = await state.get_data()
+    order_type = data.get("order_type", "3d_print")
+    if order_type == "laser_cut":
+        model_prompt = (
+            "Фото получено!\n\n"
+            "Теперь загрузите файл модели для лазерной резки в формате DXF:"
+        )
+    else:
+        allowed = ", ".join(sorted(ext.upper().lstrip(".") for ext in config.ALLOWED_MODEL_EXTENSIONS))
+        model_prompt = (
+            "Фото получено!\n\n"
+            f"Теперь загрузите файл 3D-модели в формате {allowed}:"
+        )
+    
+    await message.answer(model_prompt)
     await state.set_state(states.OrderCreationStates.waiting_for_model)
 
 
@@ -154,10 +165,20 @@ async def process_model(message: Message, state: FSMContext):
     document = message.document
     file_extension = Path(document.file_name).suffix.lower()
     
-    if file_extension not in config.ALLOWED_MODEL_EXTENSIONS:
+    data = await state.get_data()
+    order_type = data.get("order_type", "3d_print")
+    if order_type == "laser_cut":
+        allowed_extensions = config.LASER_ALLOWED_MODEL_EXTENSIONS
+    else:
+        allowed_extensions = config.ALLOWED_MODEL_EXTENSIONS
+    
+    if file_extension not in allowed_extensions:
+        allowed_readable = ", ".join(sorted(ext.upper().lstrip(".") for ext in allowed_extensions))
+        allowed_with_dot = ", ".join(sorted(ext for ext in allowed_extensions))
         await message.answer(
-            "Неверный формат. Допустимы только STL и STP файлы.\n\n"
-            "Пожалуйста, загрузите файл с расширением .stl или .stp:"
+            "Неверный формат файла.\n\n"
+            f"Допустимы только файлы формата: {allowed_readable}.\n\n"
+            f"Пожалуйста, загрузите файл с расширением {allowed_with_dot}:"
         )
         return
     
@@ -179,9 +200,17 @@ async def process_model(message: Message, state: FSMContext):
 
 
 @router.message(states.OrderCreationStates.waiting_for_model)
-async def process_model_invalid(message: Message):
+async def process_model_invalid(message: Message, state: FSMContext):
     """Обработка неверного формата файла модели"""
-    await message.answer("Пожалуйста, загрузите файл 3D-модели (STL или STP):")
+    data = await state.get_data()
+    order_type = data.get("order_type", "3d_print")
+    
+    if order_type == "laser_cut":
+        await message.answer("Пожалуйста, загрузите файл модели для лазерной резки (DXF):")
+        return
+    
+    allowed = ", ".join(sorted(ext.upper().lstrip(".") for ext in config.ALLOWED_MODEL_EXTENSIONS))
+    await message.answer(f"Пожалуйста, загрузите файл 3D-модели ({allowed}):")
 
 
 @router.message(states.OrderCreationStates.waiting_for_part_name)

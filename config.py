@@ -46,7 +46,7 @@ ORDER_STATUSES = {
 ARCHIVE_MAX_SIZE = 25
 
 # Допустимые расширения для 3D-моделей
-ALLOWED_MODEL_EXTENSIONS = {".stl", ".stp"}
+ALLOWED_MODEL_EXTENSIONS = {".stl", ".stp", ".step"}
 
 # Допустимые расширения для файлов лазерной резки
 LASER_ALLOWED_MODEL_EXTENSIONS = {".dxf"}

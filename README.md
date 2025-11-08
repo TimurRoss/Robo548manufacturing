@@ -143,7 +143,7 @@ TODO
 Пример: `105_Ivanov_Peter_Device_Case_v2.stl`
 
 ### Поддерживаемые форматы
-- **3D-модели:** .stl, .stp
+- **3D-модели:** .stl, .stp, .step
 - **Чертежи:** .dxf
 - **Изображения:** .jpg, .jpeg, .png
 

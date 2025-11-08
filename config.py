@@ -48,6 +48,15 @@ ARCHIVE_MAX_SIZE = 25
 # Допустимые расширения для 3D-моделей
 ALLOWED_MODEL_EXTENSIONS = {".stl", ".stp"}
 
+# Допустимые расширения для файлов лазерной резки
+LASER_ALLOWED_MODEL_EXTENSIONS = {".dxf"}
+
+# Справочник типов заказов
+ORDER_TYPES = {
+    "3d_print": "3D-печать",
+    "laser_cut": "Лазерная резка",
+}
+
 # Контакты технических специалистов для решения проблем
 TECH_SUPPORT_CONTACTS = [
     {"name": "Россихн Тимур", "role": "Технический специалист", "contact": "@TimurRoss"},

@@ -266,7 +266,7 @@ async def _show_order_summary(message_or_callback, state: FSMContext):
     
     order_type = data.get('order_type', '3d_print')
     material_id = data['material_id']
-    materials = await database.db.get_all_materials(order_type)
+    materials = await database.db.get_all_materials()
     material_name = next((m['name'] for m in materials if m['id'] == material_id), "Не указан")
 
     order_type_name = config.ORDER_TYPES.get(order_type, order_type)

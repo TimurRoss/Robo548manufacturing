@@ -195,7 +195,9 @@ async def process_part_name(message: Message, state: FSMContext):
     await state.update_data(part_name=part_name)
     
     # Получаем список материалов
-    materials = await database.db.get_all_materials()
+    data = await state.get_data()
+    order_type = data.get('order_type', '3d_print')
+    materials = await database.db.get_all_materials(order_type)
     if not materials:
         await message.answer("К сожалению, материалы временно недоступны. Обратитесь к администратору.")
         await state.clear()
@@ -266,7 +268,7 @@ async def _show_order_summary(message_or_callback, state: FSMContext):
     
     order_type = data.get('order_type', '3d_print')
     material_id = data['material_id']
-    materials = await database.db.get_all_materials()
+    materials = await database.db.get_all_materials(order_type)
     material_name = next((m['name'] for m in materials if m['id'] == material_id), "Не указан")
 
     order_type_name = config.ORDER_TYPES.get(order_type, order_type)
@@ -316,9 +318,39 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
             model_path=data['model_path'],
             photo_caption=data.get('photo_caption'),
             original_filename=data['original_filename'],
-            comment=data.get('comment')
+            comment=data.get('comment'),
+            order_type=data.get('order_type', '3d_print')
         )
-        
+
+        # Уведомляем администраторов о новом заказе
+        user = await database.db.get_user(user_id)
+        material = await database.db.get_material(data['material_id'])
+        material_name = material['name'] if material else "Не указан"
+        order_type = data.get('order_type', '3d_print')
+        order_type_name = config.ORDER_TYPES.get(order_type, "3D-печать")
+
+        admin_message = (
+            f"🆕 Новый заказ №{order_id}\n\n"
+            f"⚙️ Тип: {order_type_name}\n"
+            f"📦 Деталь: {data['part_name']}\n"
+            f"🧪 Материал: {material_name}\n"
+            f"👤 Клиент: {user['first_name']} {user['last_name']} (ID: {user['user_id']})\n"
+        )
+
+        comment = data.get('comment')
+        if comment:
+            admin_message += f"💬 Комментарий: {comment}\n"
+
+        admin_message += "\nПерейдите в /admin, чтобы обработать заказ."
+
+        for admin_id in config.ADMIN_IDS:
+            if admin_id == user_id:
+                continue
+            try:
+                await callback.bot.send_message(admin_id, admin_message)
+            except Exception as notify_error:
+                logger.warning(f"Не удалось отправить уведомление админу {admin_id}: {notify_error}")
+ 
         await callback.message.edit_text(
             f"✅ Ваш заказ №{order_id} создан и принят в очередь!\n"
             f"Статус: 'В ожидании'.\n\n"

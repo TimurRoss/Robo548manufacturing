@@ -4,7 +4,7 @@
 import aiosqlite
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from loguru import logger
 import config
 
@@ -52,7 +52,8 @@ class Database:
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS materials (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT UNIQUE NOT NULL
+                    name TEXT UNIQUE NOT NULL,
+                    type TEXT NOT NULL DEFAULT '3d_print'
                 )
             """)
 
@@ -71,6 +72,7 @@ class Database:
                     rejection_reason TEXT,
                     last_reminder_time TIMESTAMP,
                     comment TEXT,
+                    order_type TEXT NOT NULL DEFAULT '3d_print',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users(user_id),
                     FOREIGN KEY (status_id) REFERENCES statuses(id),
@@ -97,8 +99,21 @@ class Database:
                     await db.execute("ALTER TABLE orders ADD COLUMN comment TEXT")
                     await db.commit()
                     logger.info("Добавлено поле comment в таблицу orders")
+
+                if 'order_type' not in columns:
+                    await db.execute("ALTER TABLE orders ADD COLUMN order_type TEXT NOT NULL DEFAULT '3d_print'")
+                    await db.commit()
+                    logger.info("Добавлено поле order_type в таблицу orders")
+
+                cursor = await db.execute("PRAGMA table_info(materials)")
+                material_columns = [row[1] for row in await cursor.fetchall()]
+
+                if 'type' not in material_columns:
+                    await db.execute("ALTER TABLE materials ADD COLUMN type TEXT NOT NULL DEFAULT '3d_print'")
+                    await db.commit()
+                    logger.info("Добавлено поле type в таблицу materials")
             except Exception as e:
-                logger.warning(f"Ошибка при добавлении полей в orders: {e}")
+                logger.warning(f"Ошибка при добавлении полей в orders или materials: {e}")
 
             await db.commit()
 
@@ -312,7 +327,8 @@ class Database:
         model_path: str,
         photo_caption: Optional[str] = None,
         original_filename: str = "",
-        comment: Optional[str] = None
+        comment: Optional[str] = None,
+        order_type: str = '3d_print'
     ) -> int:
         """Создать новый заказ"""
         async with aiosqlite.connect(self.db_path) as db:
@@ -325,9 +341,9 @@ class Database:
 
             cursor = await db.execute("""
                 INSERT INTO orders 
-                (user_id, status_id, material_id, part_name, photo_path, model_path, photo_caption, original_filename, comment)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (user_id, status_id, material_id, part_name, photo_path, model_path, photo_caption, original_filename, comment))
+                (user_id, status_id, material_id, part_name, photo_path, model_path, photo_caption, original_filename, comment, order_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (user_id, status_id, material_id, part_name, photo_path, model_path, photo_caption, original_filename, comment, order_type))
 
             await db.commit()
             order_id = cursor.lastrowid
@@ -369,18 +385,26 @@ class Database:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
-    async def get_orders_statistics(self) -> Dict[str, int]:
+    async def get_orders_statistics(self, order_type: Optional[str] = None) -> Dict[str, int]:
         """Получить статистику по заказам по статусам (без архива и rejected)"""
         async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("""
+            params: Tuple[Any, ...] = ()
+            join_filter = ""
+            if order_type:
+                join_filter = " AND o.order_type = ?"
+                params = (order_type,)
+
+            cursor = await db.execute(
+                f"""
                 SELECT s.code, COUNT(o.id) as count
                 FROM statuses s
-                LEFT JOIN orders o ON s.id = o.status_id 
-                    AND s.code != 'archived' 
-                    AND s.code != 'rejected'
+                LEFT JOIN orders o ON s.id = o.status_id
+                    {join_filter}
                 WHERE s.code != 'archived' AND s.code != 'rejected'
                 GROUP BY s.code
-            """)
+                """,
+                params
+            )
             rows = await cursor.fetchall()
             stats = {}
             total = 0
@@ -392,7 +416,7 @@ class Database:
             stats['all'] = total
             return stats
 
-    async def get_orders_by_status(self, status_code: Optional[str] = None, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
+    async def get_orders_by_status(self, status_code: Optional[str] = None, order_type: Optional[str] = None, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
         """Получить заказы по статусу (или все, если status_code=None, без архива)"""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -403,7 +427,7 @@ class Database:
                     order_by = "ORDER BY o.created_at ASC"
                 else:
                     order_by = "ORDER BY o.created_at DESC"
-                
+
                 query = f"""
                     SELECT o.*, 
                            u.first_name, u.last_name, u.user_id, u.username,
@@ -414,9 +438,13 @@ class Database:
                     JOIN statuses s ON o.status_id = s.id
                     LEFT JOIN materials m ON o.material_id = m.id
                     WHERE s.code = ?
-                    {order_by}
                 """
-                params = (status_code,)
+                params_list: List[Any] = [status_code]
+                if order_type:
+                    query += " AND o.order_type = ?"
+                    params_list.append(order_type)
+                query += f"\n                    {order_by}"
+                params = tuple(params_list)
             else:
                 query = """
                     SELECT o.*, 
@@ -431,6 +459,10 @@ class Database:
                     ORDER BY o.created_at DESC
                 """
                 params = ()
+                if order_type:
+                    query = query.replace("WHERE s.code != 'archived' AND s.code != 'rejected'",
+                                           "WHERE s.code != 'archived' AND s.code != 'rejected' AND o.order_type = ?")
+                    params = (order_type,)
             
             if limit:
                 query += f" LIMIT {limit} OFFSET {offset}"
@@ -439,21 +471,31 @@ class Database:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
     
-    async def count_orders_by_status(self, status_code: Optional[str] = None) -> int:
+    async def count_orders_by_status(self, status_code: Optional[str] = None, order_type: Optional[str] = None) -> int:
         """Получить количество заказов по статусу"""
         async with aiosqlite.connect(self.db_path) as db:
             if status_code:
-                cursor = await db.execute("""
+                query = """
                     SELECT COUNT(*) FROM orders o
                     JOIN statuses s ON o.status_id = s.id
                     WHERE s.code = ?
-                """, (status_code,))
+                """
+                params: Tuple[Any, ...] = (status_code,)
+                if order_type:
+                    query += " AND o.order_type = ?"
+                    params += (order_type,)
+                cursor = await db.execute(query, params)
             else:
-                cursor = await db.execute("""
+                query = """
                     SELECT COUNT(*) FROM orders o
                     JOIN statuses s ON o.status_id = s.id
                     WHERE s.code != 'archived' AND s.code != 'rejected'
-                """)
+                """
+                params = ()
+                if order_type:
+                    query += " AND o.order_type = ?"
+                    params = (order_type,)
+                cursor = await db.execute(query, params)
             result = await cursor.fetchone()
             return result[0] if result else 0
 
@@ -493,39 +535,51 @@ class Database:
             logger.info(f"Статус заказа №{order_id} изменен на {status_code}")
             return True
 
-    async def get_all_materials(self) -> List[Dict[str, Any]]:
-        """Получить все материалы (комбинации цвет+тип)"""
+    async def get_all_materials(self, material_type: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Получить материалы (с optional фильтром по типу)"""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute("SELECT * FROM materials ORDER BY name")
+            query = "SELECT * FROM materials"
+            params: Tuple[Any, ...] = ()
+            if material_type:
+                query += " WHERE type = ?"
+                params = (material_type,)
+            query += " ORDER BY name"
+            cursor = await db.execute(query, params)
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
-    async def get_materials_with_usage_count(self) -> List[Dict[str, Any]]:
-        """Получить все материалы с количеством использований в заказах"""
+    async def get_materials_with_usage_count(self, material_type: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Получить материалы с количеством использований в заказах"""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute("""
-                SELECT m.id, m.name, COUNT(o.id) as usage_count
+            query = """
+                SELECT m.id, m.name, m.type, COUNT(o.id) as usage_count
                 FROM materials m
                 LEFT JOIN orders o ON m.id = o.material_id
-                GROUP BY m.id, m.name
-                ORDER BY m.name
-            """)
+            """
+            params: Tuple[Any, ...] = ()
+            conditions = []
+            if material_type:
+                conditions.append("m.type = ?")
+                params += (material_type,)
+            if conditions:
+                query += " WHERE " + " AND ".join(conditions)
+            query += " GROUP BY m.id, m.name, m.type ORDER BY m.name"
+            cursor = await db.execute(query, params)
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
-    async def add_material(self, name: str) -> bool:
-        """Добавить новый материал (формат: "цвет тип", например "зеленый PETG")"""
+    async def add_material(self, name: str, material_type: str = '3d_print') -> bool:
+        """Добавить новый материал"""
         async with aiosqlite.connect(self.db_path) as db:
             try:
-                # Нормализуем название (первая буква цвета заглавная, тип заглавными)
                 await db.execute(
-                    "INSERT INTO materials (name) VALUES (?)",
-                    (name.strip(),)
+                    "INSERT INTO materials (name, type) VALUES (?, ?)",
+                    (name.strip(), material_type)
                 )
                 await db.commit()
-                logger.info(f"Добавлен материал: {name}")
+                logger.info(f"Добавлен материал: {name} (тип: {material_type})")
                 return True
             except aiosqlite.IntegrityError:
                 return False
@@ -540,13 +594,26 @@ class Database:
             await db.commit()
             return cursor.rowcount > 0
 
-    async def get_material_id_by_name(self, name: str) -> Optional[int]:
+    async def get_material(self, material_id: int) -> Optional[Dict[str, Any]]:
+        """Получить материал по ID"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM materials WHERE id = ?",
+                (material_id,)
+            )
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def get_material_id_by_name(self, name: str, material_type: Optional[str] = None) -> Optional[int]:
         """Получить ID материала по имени"""
         async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute(
-                "SELECT id FROM materials WHERE name = ?",
-                (name,)
-            )
+            query = "SELECT id FROM materials WHERE name = ?"
+            params: Tuple[Any, ...] = (name,)
+            if material_type:
+                query += " AND type = ?"
+                params += (material_type,)
+            cursor = await db.execute(query, params)
             row = await cursor.fetchone()
             return row[0] if row else None
 
@@ -664,7 +731,7 @@ class Database:
             await db.commit()
             logger.info(f"Архив очищен: удалено {len(orders_to_delete)} старых заказов")
 
-    async def get_archived_orders(self, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
+    async def get_archived_orders(self, order_type: Optional[str] = None, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
         """Получить архивированные заказы"""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -682,19 +749,29 @@ class Database:
             """
             if limit:
                 query += f" LIMIT {limit} OFFSET {offset}"
-            
-            cursor = await db.execute(query)
+
+            params: Tuple[Any, ...] = ()
+            if order_type:
+                query = query.replace("WHERE s.code = 'archived'", "WHERE s.code = 'archived' AND o.order_type = ?")
+                params = (order_type,)
+
+            cursor = await db.execute(query, params)
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
-    
-    async def count_archived_orders(self) -> int:
+
+    async def count_archived_orders(self, order_type: Optional[str] = None) -> int:
         """Получить количество архивированных заказов"""
         async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("""
+            query = """
                 SELECT COUNT(*) FROM orders o
                 JOIN statuses s ON o.status_id = s.id
                 WHERE s.code = 'archived'
-            """)
+            """
+            params: Tuple[Any, ...] = ()
+            if order_type:
+                query += " AND o.order_type = ?"
+                params = (order_type,)
+            cursor = await db.execute(query, params)
             result = await cursor.fetchone()
             return result[0] if result else 0
 

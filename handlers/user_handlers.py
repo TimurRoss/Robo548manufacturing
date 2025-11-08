@@ -248,34 +248,44 @@ async def _show_order_summary(message_or_callback, state: FSMContext):
     data = await state.get_data()
     
     if isinstance(message_or_callback, CallbackQuery):
-        message = message_or_callback.message
-        user_id = message_or_callback.from_user.id
+        callback = message_or_callback
+        message = callback.message
+        user_obj = callback.from_user
     else:
         message = message_or_callback
-        user_id = message.from_user.id
-    
+        user_obj = message.from_user
+
+    user_id = user_obj.id
+    first_name = user_obj.first_name or ""
+    last_name = user_obj.last_name or ""
+    username = user_obj.username
+
     user = await database.db.get_user(user_id)
+    if not user:
+        user = await database.db.get_or_create_user(user_id, first_name, last_name, username)
     
-    # Получаем название материала
-    materials = await database.db.get_all_materials()
+    order_type = data.get('order_type', '3d_print')
     material_id = data['material_id']
+    materials = await database.db.get_all_materials(order_type)
     material_name = next((m['name'] for m in materials if m['id'] == material_id), "Не указан")
-    
-    # Формируем сводку заказа
+
+    order_type_name = config.ORDER_TYPES.get(order_type, order_type)
+
     summary = (
         f"📋 Проверьте данные заказа:\n\n"
+        f"⚙️ Тип: {order_type_name}\n"
         f"👤 Заказчик: {user['first_name']} {user['last_name']}\n"
         f"📦 Название детали: {data['part_name']}\n"
         f"🧪 Материал: {material_name}\n"
         f"📷 Фото: прикреплено\n"
         f"📁 Модель: {data['original_filename']}\n"
     )
-    
+
     if data.get('comment'):
         summary += f"💬 Комментарий: {data['comment']}\n"
-    
+
     summary += "\nВсё верно?"
-    
+
     if isinstance(message_or_callback, CallbackQuery):
         await message.edit_text(
             summary,
@@ -286,7 +296,7 @@ async def _show_order_summary(message_or_callback, state: FSMContext):
             summary,
             reply_markup=keyboards.get_confirm_order_keyboard()
         )
-    
+
     await state.set_state(states.OrderCreationStates.waiting_for_confirm)
 
 

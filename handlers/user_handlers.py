@@ -432,13 +432,17 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
         if comment:
             admin_message += f"💬 Комментарий: {comment}\n"
 
-        admin_message += "\nПерейдите в /admin, чтобы обработать заказ."
+        admin_message += "\nНажмите «Раскрыть заказ», чтобы просмотреть детали. При необходимости перейдите в /admin."
 
         for admin_id in config.ADMIN_IDS:
             if admin_id == user_id:
                 continue
             try:
-                await callback.bot.send_message(admin_id, admin_message)
+                await callback.bot.send_message(
+                    admin_id,
+                    admin_message,
+                    reply_markup=keyboards.get_admin_new_order_keyboard(order_id)
+                )
             except Exception as notify_error:
                 logger.warning(f"Не удалось отправить уведомление админу {admin_id}: {notify_error}")
  

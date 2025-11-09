@@ -22,7 +22,8 @@ def get_admin_menu_keyboard() -> ReplyKeyboardMarkup:
     builder.add(KeyboardButton(text="Админ-панель"))
     builder.add(KeyboardButton(text="Создать заказ"))
     builder.add(KeyboardButton(text="Мои заказы"))
-    builder.adjust(2, 1)
+    builder.add(KeyboardButton(text="Рассылка"))
+    builder.adjust(2, 2)
     return builder.as_markup(resize_keyboard=True)
 
 
@@ -31,7 +32,16 @@ def get_admin_main_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.add(InlineKeyboardButton(text="📦 Заказы", callback_data="admin_orders_menu"))
     builder.add(InlineKeyboardButton(text="🔧 Управление материалами", callback_data="admin_manage_materials"))
-    builder.adjust(1, 1)
+    builder.add(InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast"))
+    builder.adjust(1, 1, 1)
+    return builder.as_markup()
+
+
+def get_broadcast_cancel_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура для отмены или выхода из режима рассылки"""
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(text="❌ Отмена", callback_data="admin_broadcast_cancel"))
+    builder.adjust(1)
     return builder.as_markup()
 
 

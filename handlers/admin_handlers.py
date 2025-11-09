@@ -1,8 +1,10 @@
 """
 Обработчики для администраторов
 """
+import asyncio
+
 from aiogram import Router, F, Bot
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
@@ -223,6 +225,141 @@ async def cmd_admin(message: Message):
     )
 
 
+@router.message(F.text == "Рассылка")
+async def start_broadcast_from_menu(message: Message, state: FSMContext):
+    """Запуск режима рассылки из главного меню"""
+    if not is_admin(message.from_user.id):
+        await message.answer("У вас нет доступа к режиму рассылки.")
+        return
+
+    prompt_message = await message.answer(
+        "📢 Режим рассылки\n\n"
+        "Отправьте сообщение, которое нужно разослать всем пользователям.\n"
+        "Можно отправить текст, фото, документ или другое сообщение — мы отправим точную копию.\n\n"
+        "Чтобы отменить рассылку, используйте кнопки ниже.",
+        reply_markup=keyboards.get_broadcast_cancel_keyboard()
+    )
+
+    await state.set_state(states.BroadcastStates.waiting_for_message)
+    await state.update_data(
+        broadcast_prompt_chat_id=prompt_message.chat.id,
+        broadcast_prompt_message_id=prompt_message.message_id
+    )
+
+
+@router.callback_query(F.data == "admin_broadcast")
+async def start_broadcast(callback: CallbackQuery, state: FSMContext):
+    """Запустить режим рассылки сообщений"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+
+    await state.set_state(states.BroadcastStates.waiting_for_message)
+    await state.update_data(
+        broadcast_prompt_chat_id=callback.message.chat.id,
+        broadcast_prompt_message_id=callback.message.message_id
+    )
+
+    await callback.message.edit_text(
+        "📢 Режим рассылки\n\n"
+        "Отправьте сообщение, которое нужно разослать всем пользователям.\n"
+        "Можно отправить текст, фото, документ или другое сообщение — мы отправим точную копию.\n\n"
+        "Чтобы отменить рассылку, используйте кнопки ниже.",
+        reply_markup=keyboards.get_broadcast_cancel_keyboard()
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_broadcast_cancel")
+async def cancel_broadcast(callback: CallbackQuery, state: FSMContext):
+    """Отменить режим рассылки"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+
+    await state.set_state(None)
+    await state.update_data(broadcast_prompt_chat_id=None, broadcast_prompt_message_id=None)
+
+    await callback.message.edit_text(
+        "🔧 Панель администратора\n\n"
+        "Выберите раздел:",
+        reply_markup=keyboards.get_admin_main_keyboard()
+    )
+    await callback.answer("Рассылка отменена.")
+
+
+@router.message(states.BroadcastStates.waiting_for_message)
+async def process_broadcast_message(message: Message, state: FSMContext):
+    """Отправить сообщение рассылки всем пользователям"""
+    if not is_admin(message.from_user.id):
+        await message.answer("У вас нет доступа к режиму рассылки.")
+        await state.set_state(None)
+        return
+
+    user_ids = await database.db.get_all_user_ids()
+    unique_user_ids = sorted({int(user_id) for user_id in user_ids if isinstance(user_id, int)})
+
+    # Исключаем отправителя, он уже видит своё сообщение
+    if message.from_user.id in unique_user_ids:
+        unique_user_ids.remove(message.from_user.id)
+
+    total_recipients = len(unique_user_ids)
+
+    sent_count = 0
+    failed_count = 0
+
+    for user_id in unique_user_ids:
+        try:
+            await message.copy_to(user_id)
+            sent_count += 1
+        except TelegramRetryAfter as exc:
+            await asyncio.sleep(exc.retry_after)
+            try:
+                await message.copy_to(user_id)
+                sent_count += 1
+            except TelegramForbiddenError:
+                failed_count += 1
+                logger.info(f"Пользователь {user_id} запретил сообщения от бота, пропускаем.")
+            except TelegramBadRequest as inner_exc:
+                failed_count += 1
+                logger.warning(f"Не удалось отправить сообщение пользователю {user_id}: {inner_exc}")
+            except Exception as inner_exc:
+                failed_count += 1
+                logger.error(f"Ошибка при повторной отправке пользователю {user_id}: {inner_exc}")
+        except TelegramForbiddenError:
+            failed_count += 1
+            logger.info(f"Пользователь {user_id} запретил сообщения от бота, пропускаем.")
+        except TelegramBadRequest as exc:
+            failed_count += 1
+            logger.warning(f"Не удалось отправить сообщение пользователю {user_id}: {exc}")
+        except Exception as exc:
+            failed_count += 1
+            logger.error(f"Не удалось отправить сообщение пользователю {user_id}: {exc}")
+
+        # Небольшая пауза для снижения риска Flood control
+        await asyncio.sleep(0.05)
+
+    summary_text = (
+        "📢 Рассылка завершена\n\n"
+        f"Всего получателей: {total_recipients}\n"
+        f"Успешно отправлено: {sent_count}\n"
+        f"С ошибками: {failed_count}\n\n"
+        "Выберите дальнейшее действие:"
+    )
+
+    await message.answer(
+        summary_text,
+        reply_markup=keyboards.get_admin_main_keyboard()
+    )
+
+    logger.info(
+        f"Администратор {message.from_user.id} отправил рассылку. "
+        f"Получателей: {total_recipients}, успешно: {sent_count}, ошибки: {failed_count}"
+    )
+
+    await state.update_data(broadcast_prompt_chat_id=None, broadcast_prompt_message_id=None)
+    await state.set_state(None)
+
 @router.callback_query(F.data == "admin_orders_menu")
 async def show_orders_menu(callback: CallbackQuery, state: FSMContext):
     """Показать меню фильтров заказов"""
@@ -411,12 +548,15 @@ async def back_to_orders_list(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data == "admin_back_to_main")
-async def back_to_admin_main(callback: CallbackQuery):
+async def back_to_admin_main(callback: CallbackQuery, state: FSMContext):
     """Вернуться в главное меню админ-панели"""
     if not is_admin(callback.from_user.id):
         await callback.answer("У вас нет доступа", show_alert=True)
         return
     
+    await state.set_state(None)
+    await state.update_data(broadcast_prompt_chat_id=None, broadcast_prompt_message_id=None)
+
     await callback.message.edit_text(
         "🔧 Панель администратора\n\n"
         "Выберите раздел:",

@@ -349,6 +349,13 @@ class Database:
             user = await cursor.fetchone()
             return dict(user) if user else None
 
+    async def get_all_user_ids(self) -> List[int]:
+        """Получить список всех ID пользователей бота"""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("SELECT user_id FROM users")
+            rows = await cursor.fetchall()
+            return [int(row[0]) for row in rows if row and row[0] is not None]
+
     async def create_order(
         self,
         user_id: int,

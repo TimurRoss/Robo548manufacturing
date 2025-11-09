@@ -3,7 +3,7 @@
 """
 import aiosqlite
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 from loguru import logger
 import config
@@ -12,6 +12,37 @@ import config
 class Database:
     def __init__(self, db_path: Path = config.DB_PATH):
         self.db_path = db_path
+
+    _DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+    _DATETIME_MICRO_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
+    _UTC_OFFSET = timedelta(hours=config.TIMEZONE_OFFSET_HOURS)
+
+    @classmethod
+    def _format_created_at(cls, created_at: Optional[str]) -> Optional[str]:
+        if not created_at:
+            return created_at
+        for fmt in (cls._DATETIME_FORMAT, cls._DATETIME_MICRO_FORMAT):
+            try:
+                dt = datetime.strptime(created_at, fmt)
+                dt += cls._UTC_OFFSET
+                return dt.strftime(cls._DATETIME_FORMAT)
+            except ValueError:
+                continue
+        return created_at
+
+    @classmethod
+    def _order_row_to_dict(cls, row) -> Optional[Dict[str, Any]]:
+        if row is None:
+            return None
+        data = dict(row)
+        formatted = cls._format_created_at(data.get("created_at"))
+        if formatted:
+            data["created_at"] = formatted
+        return data
+
+    @classmethod
+    def _order_rows_to_list(cls, rows: List[Any]) -> List[Dict[str, Any]]:
+        return [cls._order_row_to_dict(row) for row in rows if row is not None]
 
     async def init_db(self):
         """Инициализация базы данных и создание таблиц"""
@@ -366,7 +397,7 @@ class Database:
                 WHERE o.id = ?
             """, (order_id,))
             order = await cursor.fetchone()
-            return dict(order) if order else None
+            return self._order_row_to_dict(order)
 
     async def get_user_orders(self, user_id: int) -> List[Dict[str, Any]]:
         """Получить все заказы пользователя"""
@@ -383,7 +414,7 @@ class Database:
                 ORDER BY o.created_at DESC
             """, (user_id,))
             rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+            return self._order_rows_to_list(rows)
 
     async def get_orders_statistics(self, order_type: Optional[str] = None) -> Dict[str, int]:
         """Получить статистику по заказам по статусам (без архива и rejected)"""
@@ -469,7 +500,7 @@ class Database:
             
             cursor = await db.execute(query, params)
             rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+            return self._order_rows_to_list(rows)
     
     async def count_orders_by_status(self, status_code: Optional[str] = None, order_type: Optional[str] = None) -> int:
         """Получить количество заказов по статусу"""
@@ -547,7 +578,7 @@ class Database:
             query += " ORDER BY name"
             cursor = await db.execute(query, params)
             rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+            return self._order_rows_to_list(rows)
 
     async def get_materials_with_usage_count(self, material_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """Получить материалы с количеством использований в заказах"""
@@ -568,7 +599,7 @@ class Database:
             query += " GROUP BY m.id, m.name, m.type ORDER BY m.name"
             cursor = await db.execute(query, params)
             rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+            return self._order_rows_to_list(rows)
 
     async def add_material(self, name: str, material_type: str = '3d_print') -> bool:
         """Добавить новый материал"""
@@ -637,7 +668,7 @@ class Database:
                 ORDER BY o.created_at DESC
             """, (hours,))
             rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+            return self._order_rows_to_list(rows)
 
     async def update_last_reminder_time(self, order_id: int):
         """Обновить время последнего напоминания для заказа"""
@@ -757,7 +788,7 @@ class Database:
 
             cursor = await db.execute(query, params)
             rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+            return self._order_rows_to_list(rows)
 
     async def count_archived_orders(self, order_type: Optional[str] = None) -> int:
         """Получить количество архивированных заказов"""

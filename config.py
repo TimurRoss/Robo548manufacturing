@@ -57,6 +57,12 @@ ORDER_TYPES = {
     "laser_cut": "Лазерная резка",
 }
 
+# Сдвиг времени (UTC offset) для отображения времени создания заказов
+try:
+    TIMEZONE_OFFSET_HOURS = float(os.getenv("TIMEZONE_OFFSET_HOURS", "3"))
+except ValueError:
+    TIMEZONE_OFFSET_HOURS = 3.0
+
 # Контакты технических специалистов для решения проблем
 TECH_SUPPORT_CONTACTS = [
     {"name": "Россихн Тимур", "role": "Технический специалист", "contact": "@TimurRoss"},

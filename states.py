@@ -12,6 +12,7 @@ class RegistrationStates(StatesGroup):
 
 class OrderCreationStates(StatesGroup):
     """Состояния для создания заказа"""
+    waiting_for_order_type = State()
     waiting_for_photo = State()
     waiting_for_model = State()
     waiting_for_part_name = State()

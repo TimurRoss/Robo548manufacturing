@@ -2,6 +2,7 @@
 Обработчики для администраторов
 """
 from aiogram import Router, F, Bot
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
@@ -23,6 +24,188 @@ def is_admin(user_id: int) -> bool:
     return user_id in config.ADMIN_IDS
 
 
+@router.callback_query(F.data.startswith("admin_materials_back:"))
+async def materials_back_to_list(callback: CallbackQuery, state: FSMContext):
+    """Вернуться к списку материалов после действий"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+
+    material_type = callback.data.split(":")[1]
+    await state.update_data(material_management_type=material_type)
+
+    materials = await database.db.get_materials_with_usage_count(material_type)
+    if material_type == "laser_cut":
+        header = "Материалы для лазерной резки"
+    else:
+        header = "Материалы для 3D печати"
+
+    if materials:
+        materials_text = f"📋 {header}:\n\n"
+        for material in materials:
+            usage_count = material.get('usage_count', 0)
+            materials_text += f"• {material['name']}"
+            if usage_count > 0:
+                suffix = "раз"
+                materials_text += f" (использован {usage_count} {suffix})"
+            materials_text += "\n"
+        materials_text += f"\nВсего материалов: {len(materials)}"
+    else:
+        materials_text = f"📋 {header}:\n\nМатериалы не добавлены."
+
+    await callback.message.edit_text(
+        f"{materials_text}\n\nВыберите действие:",
+        reply_markup=keyboards.get_manage_materials_keyboard(material_type)
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "admin_back_to_material_types")
+async def back_to_material_types(callback: CallbackQuery, state: FSMContext):
+    """Вернуться к выбору типов материалов"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+
+    await state.update_data(material_management_type=None)
+
+    print_materials = await database.db.get_materials_with_usage_count('3d_print')
+    laser_materials = await database.db.get_materials_with_usage_count('laser_cut')
+
+    summary = (
+        "📋 Материалы по категориям:\n\n"
+        f"• Для 3D печати: {len(print_materials)} шт\n"
+        f"• Для лазерной резки: {len(laser_materials)} шт\n"
+    )
+
+    await callback.message.edit_text(
+        f"🔧 Управление материалами\n\n{summary}\nВыберите категорию:",
+        reply_markup=keyboards.get_admin_materials_type_keyboard({
+            "3d_print": len(print_materials),
+            "laser_cut": len(laser_materials)
+        })
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("admin_materials_type:"))
+async def show_materials_for_type(callback: CallbackQuery, state: FSMContext):
+    """Показать материалы выбранного типа"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+
+    material_type = callback.data.split(":")[1]
+    await state.update_data(material_management_type=material_type)
+
+    materials = await database.db.get_materials_with_usage_count(material_type)
+    if material_type == "laser_cut":
+        header = "Материалы для лазерной резки"
+    else:
+        header = "Материалы для 3D печати"
+
+    if materials:
+        materials_text = f"📋 {header}:\n\n"
+        for material in materials:
+            usage_count = material.get('usage_count', 0)
+            materials_text += f"• {material['name']}"
+            if usage_count > 0:
+                suffix = "раз"
+                if usage_count % 10 == 1 and usage_count % 100 != 11:
+                    suffix = "раз"
+                materials_text += f" (использован {usage_count} {suffix})"
+            materials_text += "\n"
+        materials_text += f"\nВсего материалов: {len(materials)}"
+    else:
+        materials_text = f"📋 {header}:\n\nМатериалы не добавлены."
+
+    await callback.message.edit_text(
+        f"{materials_text}\n\nВыберите действие:",
+        reply_markup=keyboards.get_manage_materials_keyboard(material_type)
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "admin_back_to_order_types")
+async def back_to_order_types(callback: CallbackQuery, state: FSMContext):
+    """Вернуться к выбору типов заказов"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+
+    await state.update_data(admin_order_type=None, admin_order_status=None, admin_orders_page=0)
+
+    order_stats: dict[str, dict] = {}
+    archived_counts: dict[str, int] = {}
+    summary_lines = []
+
+    for order_type, title in config.ORDER_TYPES.items():
+        stats = await database.db.get_orders_statistics(order_type)
+        archived = await database.db.count_archived_orders(order_type)
+        order_stats[order_type] = stats
+        archived_counts[order_type] = archived
+
+        total = stats.get("all", 0) + archived
+        summary_lines.append(
+            f"{title}: {total} шт (ожидание — {stats.get('pending', 0)}, "
+            f"в работе — {stats.get('in_progress', 0)}, готов — {stats.get('ready', 0)}, "
+            f"архив — {archived})"
+        )
+
+    stats_text = "\n".join(summary_lines) if summary_lines else "Нет заказов."
+
+    await callback.message.edit_text(
+        "📦 Заказы\n\n"
+        f"{stats_text}\n\n"
+        "Выберите тип заказов:",
+        reply_markup=keyboards.get_admin_order_types_keyboard(order_stats, archived_counts)
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("admin_back_to_statuses:"))
+async def back_to_statuses(callback: CallbackQuery, state: FSMContext):
+    """Вернуться к списку статусов для выбранного типа"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+
+    order_type = callback.data.split(":")[1]
+    await _render_orders_overview(callback.message, order_type, state)
+    await callback.answer()
+
+async def _render_orders_overview(message: Message, order_type: str, state: FSMContext):
+    """Помощник для отображения статистики и разделов по типу заказов"""
+    order_type_name = config.ORDER_TYPES.get(order_type, order_type)
+    stats = await database.db.get_orders_statistics(order_type)
+    archived_count = await database.db.count_archived_orders(order_type)
+
+    await state.update_data(admin_order_type=order_type, admin_order_status=None, admin_orders_page=0)
+
+    stats_text = (
+        f"• В ожидании: {stats.get('pending', 0)} шт\n"
+        f"• В работе: {stats.get('in_progress', 0)} шт\n"
+        f"• Готов: {stats.get('ready', 0)} шт\n"
+        f"• Архив: {archived_count} шт\n"
+        f"• Всего (без архива): {stats.get('all', 0)} шт"
+    )
+
+    await message.edit_text(
+        f"📦 Заказы — {order_type_name}\n\n"
+        f"{stats_text}\n\n"
+        "Выберите раздел:",
+        reply_markup=keyboards.get_admin_orders_keyboard(stats, archived_count, order_type)
+    )
+
+
+@router.callback_query(F.data.startswith("admin_orders_type:"))
+async def show_orders_type(callback: CallbackQuery, state: FSMContext):
+    """Показать статистику и разделы для выбранного типа заказов"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+
+    order_type = callback.data.split(":")[1]
+    await _render_orders_overview(callback.message, order_type, state)
+    await callback.answer()
+
+
 @router.message(Command("admin"))
 @router.message(F.text == "Админ-панель")
 async def cmd_admin(message: Message):
@@ -41,116 +224,157 @@ async def cmd_admin(message: Message):
 
 
 @router.callback_query(F.data == "admin_orders_menu")
-async def show_orders_menu(callback: CallbackQuery):
+async def show_orders_menu(callback: CallbackQuery, state: FSMContext):
     """Показать меню фильтров заказов"""
     if not is_admin(callback.from_user.id):
         await callback.answer("У вас нет доступа", show_alert=True)
         return
     
-    # Получаем статистику по заказам
-    stats = await database.db.get_orders_statistics()
-    
-    # Получаем количество заказов в архиве
-    archived_count = await database.db.count_archived_orders()
-    
-    # Формируем текст со статистикой
-    stats_text = "📊 Статистика:\n"
-    stats_text += f"• Все заказы: {stats.get('all', 0)} шт\n"
-    stats_text += f"• В ожидании: {stats.get('pending', 0)} шт\n"
-    stats_text += f"• В работе: {stats.get('in_progress', 0)} шт\n"
-    stats_text += f"• Готов: {stats.get('ready', 0)} шт\n"
-    stats_text += f"• Архив: {archived_count} шт\n"
-    
+    await state.update_data(admin_order_type=None, admin_order_status=None)
+
+    order_stats: dict[str, dict] = {}
+    archived_counts: dict[str, int] = {}
+    summary_lines = []
+
+    for order_type, title in config.ORDER_TYPES.items():
+        stats = await database.db.get_orders_statistics(order_type)
+        archived = await database.db.count_archived_orders(order_type)
+        order_stats[order_type] = stats
+        archived_counts[order_type] = archived
+
+        total = stats.get("all", 0) + archived
+        summary_lines.append(
+            f"{title}: {total} шт (ожидание — {stats.get('pending', 0)}, "
+            f"в работе — {stats.get('in_progress', 0)}, готов — {stats.get('ready', 0)}, "
+            f"архив — {archived})"
+        )
+
+    stats_text = "\n".join(summary_lines) if summary_lines else "Нет заказов."
+
     await callback.message.edit_text(
-        f"📦 Заказы\n\n{stats_text}\nВыберите фильтр:",
-        reply_markup=keyboards.get_admin_orders_keyboard(stats, archived_count)
+        "📦 Заказы\n\n"
+        f"{stats_text}\n\n"
+        "Выберите тип заказов:",
+        reply_markup=keyboards.get_admin_order_types_keyboard(order_stats, archived_counts)
     )
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("admin_orders:"))
-async def show_orders_by_status(callback: CallbackQuery):
+async def show_orders_by_status(callback: CallbackQuery, state: FSMContext):
     """Показать заказы по статусу (первая страница)"""
     if not is_admin(callback.from_user.id):
         await callback.answer("У вас нет доступа", show_alert=True)
         return
     
-    status_code = callback.data.split(":")[1]
+    _, order_type, status_code = callback.data.split(":")
+    order_type_name = config.ORDER_TYPES.get(order_type, order_type)
+
+    await state.update_data(admin_order_type=order_type, admin_order_status=status_code)
     
     # Проверяем, есть ли заказы в разделе
     if status_code == "all":
-        total_count = await database.db.count_orders_by_status(None)
+        total_count = await database.db.count_orders_by_status(None, order_type=order_type)
     elif status_code == "archived":
-        total_count = await database.db.count_archived_orders()
+        total_count = await database.db.count_archived_orders(order_type)
     else:
-        total_count = await database.db.count_orders_by_status(status_code)
-    
+        total_count = await database.db.count_orders_by_status(status_code, order_type=order_type)
+
     # Если раздел пуст, показываем предупреждение и не меняем сообщение
     if total_count == 0:
         if status_code == "all":
-            status_text = "Все заказы"
+            status_text = f"Все заказы ({order_type_name})"
         elif status_code == "archived":
-            status_text = "Архив"
+            status_text = f"Архив ({order_type_name})"
         else:
-            status_text = config.ORDER_STATUSES.get(status_code, status_code)
+            status_text = f"{config.ORDER_STATUSES.get(status_code, status_code)} ({order_type_name})"
         await callback.answer(f"Раздел '{status_text}' пуст", show_alert=True)
         return
     
-    await _show_orders_page(callback, status_code, page=0)
+    await _show_orders_page(callback, state, order_type, status_code, page=0)
     await callback.answer()
 
 
-async def _show_orders_page(callback: CallbackQuery, status_code: str, page: int = 0, orders_per_page: int = 6):
+async def _show_orders_page(callback: CallbackQuery, state: FSMContext, order_type: str, status_code: str, page: int = 0, orders_per_page: int = 6):
     """Показать страницу с заказами"""
+    order_type_name = config.ORDER_TYPES.get(order_type, order_type)
+
     if status_code == "all":
-        total_count = await database.db.count_orders_by_status(None)
-        orders = await database.db.get_orders_by_status(None, limit=orders_per_page, offset=page * orders_per_page)
+        total_count = await database.db.count_orders_by_status(None, order_type=order_type)
         status_text = "Все заказы"
     elif status_code == "archived":
-        total_count = await database.db.count_archived_orders()
-        orders = await database.db.get_archived_orders(limit=orders_per_page, offset=page * orders_per_page)
+        total_count = await database.db.count_archived_orders(order_type)
         status_text = "Архив"
     else:
-        total_count = await database.db.count_orders_by_status(status_code)
-        orders = await database.db.get_orders_by_status(status_code, limit=orders_per_page, offset=page * orders_per_page)
+        total_count = await database.db.count_orders_by_status(status_code, order_type=order_type)
         status_text = config.ORDER_STATUSES.get(status_code, status_code)
     
-    if not orders and page == 0:
-        # Если нет заказов, показываем предупреждение, но не меняем сообщение
-        await callback.answer(f"Раздел '{status_text}' пуст", show_alert=True)
+    if total_count == 0:
+        # Раздел пуст — возвращаемся к уровню выше (меню статусов)
+        await _render_orders_overview(callback.message, order_type, state)
+        await callback.answer("Раздел пуст. Возвращаемся к списку статусов.")
         return
-    
+
     total_pages = (total_count + orders_per_page - 1) // orders_per_page if total_count > 0 else 1
+    page = min(page, max(total_pages - 1, 0))
+    offset = page * orders_per_page
+
+    if status_code == "all":
+        orders = await database.db.get_orders_by_status(None, order_type=order_type, limit=orders_per_page, offset=offset)
+    elif status_code == "archived":
+        orders = await database.db.get_archived_orders(order_type=order_type, limit=orders_per_page, offset=offset)
+    else:
+        orders = await database.db.get_orders_by_status(status_code, order_type=order_type, limit=orders_per_page, offset=offset)
+    
+    if not orders and page > 0:
+        # Если после удаления заказов текущая страница опустела, пробуем предыдущую
+        await _show_orders_page(callback, state, order_type, status_code, page=page - 1, orders_per_page=orders_per_page)
+        return
+
+    await state.update_data(
+        admin_order_type=order_type,
+        admin_order_status=status_code,
+        admin_orders_page=page
+    )
     
     start_num = page * orders_per_page + 1
     end_num = min((page + 1) * orders_per_page, total_count)
     
-    await callback.message.edit_text(
-        f"📋 {status_text}\n"
-        f"Заказы {start_num}-{end_num} из {total_count}\n"
-        f"Страница {page + 1} из {total_pages}\n\n"
-        "Выберите заказ для просмотра:",
-        reply_markup=keyboards.get_orders_list_keyboard(
-            orders, 
-            prefix="admin_order",
-            status_code=status_code,
-            current_page=page,
-            total_pages=total_pages
+    try:
+        await callback.message.edit_text(
+            f"📋 {status_text} — {order_type_name}\n"
+            f"Заказы {start_num}-{end_num} из {total_count}\n"
+            f"Страница {page + 1} из {total_pages}\n\n"
+            "Выберите заказ для просмотра:",
+            reply_markup=keyboards.get_orders_list_keyboard(
+                orders,
+                prefix="admin_order",
+                status_code=status_code,
+                current_page=page,
+                total_pages=total_pages,
+                order_type=order_type,
+                back_callback=f"admin_back_to_statuses:{order_type}",
+                back_text="⬅️ Назад к разделу"
+            )
         )
-    )
+    except TelegramBadRequest as exc:
+        if "message is not modified" in str(exc):
+            await callback.answer("Эта страница уже открыта.")
+            return
+        raise
 
 
 @router.callback_query(F.data.startswith("admin_orders_page:"))
-async def show_orders_page(callback: CallbackQuery):
+async def show_orders_page(callback: CallbackQuery, state: FSMContext):
     """Показать конкретную страницу с заказами"""
     if not is_admin(callback.from_user.id):
         await callback.answer("У вас нет доступа", show_alert=True)
         return
     
-    _, status_code, page = callback.data.split(":")
+    _, order_type, status_code, page = callback.data.split(":")
     page = int(page)
     
-    await _show_orders_page(callback, status_code, page=page)
+    await _show_orders_page(callback, state, order_type, status_code, page=page)
     await callback.answer()
 
 
@@ -160,31 +384,29 @@ async def noop_handler(callback: CallbackQuery):
     await callback.answer()
 
 
-@router.callback_query(F.data == "admin_back_to_orders")
-async def back_to_orders_list(callback: CallbackQuery):
-    """Вернуться к списку заказов"""
+@router.callback_query(F.data.startswith("admin_back_to_orders"))
+async def back_to_orders_list(callback: CallbackQuery, state: FSMContext):
+    """Вернуться к списку заказов выбранного типа"""
     if not is_admin(callback.from_user.id):
         await callback.answer("У вас нет доступа", show_alert=True)
         return
     
-    # Получаем статистику по заказам
-    stats = await database.db.get_orders_statistics()
-    
-    # Получаем количество заказов в архиве
-    archived_count = await database.db.count_archived_orders()
-    
-    # Формируем текст со статистикой
-    stats_text = "📊 Статистика:\n"
-    stats_text += f"• Все заказы: {stats.get('all', 0)} шт\n"
-    stats_text += f"• В ожидании: {stats.get('pending', 0)} шт\n"
-    stats_text += f"• В работе: {stats.get('in_progress', 0)} шт\n"
-    stats_text += f"• Готов: {stats.get('ready', 0)} шт\n"
-    stats_text += f"• Архив: {archived_count} шт\n"
-    
-    await callback.message.edit_text(
-        f"📦 Заказы\n\n{stats_text}\nВыберите фильтр:",
-        reply_markup=keyboards.get_admin_orders_keyboard(stats, archived_count)
-    )
+    parts = callback.data.split(":")
+    data = await state.get_data()
+
+    if len(parts) >= 4:
+        order_type = parts[1]
+        status_code = parts[2]
+        page = int(parts[3])
+    else:
+        order_type = parts[1] if len(parts) > 1 else data.get("admin_order_type") or "3d_print"
+        status_code = parts[2] if len(parts) > 2 else data.get("admin_order_status")
+        page = data.get("admin_orders_page", 0)
+
+    if status_code and status_code not in (None, "None", ""):
+        await _show_orders_page(callback, state, order_type, status_code, page=page)
+    else:
+        await _render_orders_overview(callback.message, order_type, state)
     await callback.answer()
 
 
@@ -204,13 +426,39 @@ async def back_to_admin_main(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("admin_order:"))
-async def show_order_detail(callback: CallbackQuery):
+async def show_order_detail(callback: CallbackQuery, state: FSMContext):
     """Показать детали заказа администратору"""
     if not is_admin(callback.from_user.id):
         await callback.answer("У вас нет доступа", show_alert=True)
         return
     
-    order_id = int(callback.data.split(":")[1])
+    parts = callback.data.split(":")
+    current_page = None
+
+    if len(parts) >= 5:
+        _, order_type, list_status, order_id_str, page_str = parts[:5]
+        current_page = int(page_str)
+    elif len(parts) == 4:
+        _, order_type, list_status, order_id_str = parts
+    else:
+        order_id_str = parts[-1]
+        order_type = None
+        list_status = None
+
+    data = await state.get_data()
+    if order_type is None:
+        order_type = data.get("admin_order_type") or "3d_print"
+    if list_status is None:
+        list_status = data.get("admin_order_status")
+    if current_page is None:
+        current_page = data.get("admin_orders_page", 0)
+    await state.update_data(
+        admin_order_type=order_type,
+        admin_order_status=list_status,
+        admin_orders_page=current_page
+    )
+
+    order_id = int(order_id_str)
     order = await database.db.get_order(order_id)
     
     if not order:
@@ -220,6 +468,8 @@ async def show_order_detail(callback: CallbackQuery):
     status_code = order.get('status_code', 'unknown')
     status_name = order.get('status_name', 'Неизвестно')
     material_name = order.get('material_name', 'Не указан')
+    order_type_code = order.get('order_type', order_type)
+    order_type_name = config.ORDER_TYPES.get(order_type_code, order_type_code)
     
     # Формируем информацию о пользователе
     user_info = f"{order['first_name']} {order['last_name']}"
@@ -232,6 +482,7 @@ async def show_order_detail(callback: CallbackQuery):
         f"📋 Заказ №{order['id']}\n\n"
         f"📅 Дата создания: {order['created_at']}\n"
         f"👤 Заказчик: {user_info}\n"
+        f"⚙️ Тип: {order_type_name}\n"
         f"📦 Название детали: {order['part_name']}\n"
         f"🧪 Материал: {material_name}\n"
         f"📊 Статус: {status_name}\n"
@@ -260,7 +511,14 @@ async def show_order_detail(callback: CallbackQuery):
             await callback.bot.send_message(
                 callback.message.chat.id,
                 "Выберите действие:",
-                reply_markup=keyboards.get_order_detail_keyboard(order_id, status_code, is_admin=True)
+                reply_markup=keyboards.get_order_detail_keyboard(
+                    order_id,
+                    status_code,
+                    is_admin=True,
+                    order_type=order_type,
+                    list_status=list_status,
+                    current_page=current_page
+                )
             )
         except Exception as e:
             logger.error(f"Ошибка при отправке фото: {e}")
@@ -269,7 +527,14 @@ async def show_order_detail(callback: CallbackQuery):
             await callback.bot.send_message(
                 callback.message.chat.id,
                 "Выберите действие:",
-                reply_markup=keyboards.get_order_detail_keyboard(order_id, status_code, is_admin=True)
+                reply_markup=keyboards.get_order_detail_keyboard(
+                    order_id,
+                    status_code,
+                    is_admin=True,
+                    order_type=order_type,
+                    list_status=list_status,
+                    current_page=current_page
+                )
             )
     else:
         await callback.message.edit_text(order_text)
@@ -277,7 +542,14 @@ async def show_order_detail(callback: CallbackQuery):
         await callback.bot.send_message(
             callback.message.chat.id,
             "Выберите действие:",
-            reply_markup=keyboards.get_order_detail_keyboard(order_id, status_code, is_admin=True)
+            reply_markup=keyboards.get_order_detail_keyboard(
+                order_id,
+                status_code,
+                is_admin=True,
+                order_type=order_type,
+                list_status=list_status,
+                current_page=current_page
+            )
         )
     await callback.answer()
 
@@ -301,9 +573,14 @@ async def download_model(callback: CallbackQuery):
         await callback.answer("Файл модели не найден", show_alert=True)
         return
     
-    # Формируем новое имя файла по шаблону: {order_id}_{last_name}_{first_name}_{part_name}.stl
-    file_extension = model_path.suffix.lower()  # .stl или .stp
-    part_name = order['part_name'] or (order.get('original_filename', '').replace(file_extension, '').replace('.stl', '').replace('.stp', ''))
+    # Формируем новое имя файла по шаблону: {order_id}_{last_name}_{first_name}_{part_name}.<ext>
+    file_extension = model_path.suffix.lower()
+    original_filename = order.get('original_filename')
+    if original_filename:
+        part_name_source = Path(original_filename).stem
+    else:
+        part_name_source = model_path.stem
+    part_name = order['part_name'] or part_name_source
     
     # Очищаем имена от недопустимых символов для файловых имен
     import re
@@ -355,10 +632,20 @@ async def reject_order_start(callback: CallbackQuery, state: FSMContext):
         await callback.answer("У вас нет доступа", show_alert=True)
         return
     
-    order_id = int(callback.data.split(":")[1])
+    parts = callback.data.split(":")
+    state_data = await state.get_data()
+    order_id = int(parts[1])
+    order_type = parts[2] if len(parts) > 2 else state_data.get("admin_order_type")
+    list_status = parts[3] if len(parts) > 3 else state_data.get("admin_order_status")
+    list_page = int(parts[4]) if len(parts) > 4 else state_data.get("admin_orders_page", 0)
     
     # Сохраняем order_id в состоянии
-    await state.update_data(order_id=order_id)
+    await state.update_data(
+        order_id=order_id,
+        reject_order_type=order_type,
+        reject_list_status=list_status,
+        reject_list_page=list_page
+    )
     
     await callback.message.edit_text(
         "❌ Отклонение заказа\n\n"
@@ -406,30 +693,41 @@ async def reject_order_process(message: Message, state: FSMContext):
     # Отправляем уведомление пользователю с причиной отклонения
     await notify_user_order_status_changed(message.bot, order, "Отклонен")
     
-    # Получаем статистику для обновления меню
-    stats = await database.db.get_orders_statistics()
-    archived_orders = await database.db.get_archived_orders()
-    archived_count = len(archived_orders)
-    
-    stats_text = "📊 Статистика:\n"
-    stats_text += f"• Все заказы: {stats.get('all', 0)} шт\n"
-    stats_text += f"• В ожидании: {stats.get('pending', 0)} шт\n"
-    stats_text += f"• В работе: {stats.get('in_progress', 0)} шт\n"
-    stats_text += f"• Готов: {stats.get('ready', 0)} шт\n"
-    stats_text += f"• Архив: {archived_count} шт\n"
-    
+    order_type = data.get('reject_order_type') or data.get('admin_order_type') or '3d_print'
+    list_status = data.get('reject_list_status') or 'archived'
+    list_page = data.get('reject_list_page', data.get('admin_orders_page', 0))
+
+    stats = await database.db.get_orders_statistics(order_type)
+    archived_count = await database.db.count_archived_orders(order_type)
+    order_type_name = config.ORDER_TYPES.get(order_type, order_type)
+
+    await state.update_data(
+        admin_order_type=order_type,
+        admin_order_status=list_status,
+        admin_orders_page=list_page
+    )
+
+    stats_text = (
+        f"• В ожидании: {stats.get('pending', 0)} шт\n"
+        f"• В работе: {stats.get('in_progress', 0)} шт\n"
+        f"• Готов: {stats.get('ready', 0)} шт\n"
+        f"• Архив: {archived_count} шт\n"
+        f"• Всего (без архива): {stats.get('all', 0)} шт"
+    )
+
     await message.answer(
         f"✅ Заказ №{order_id} отклонен и перемещен в архив.\n\n"
         f"Причина: {rejection_reason}\n\n"
-        f"{stats_text}\nВыберите фильтр:",
-        reply_markup=keyboards.get_admin_orders_keyboard(stats, archived_count)
+        f"📦 Заказы — {order_type_name}\n\n"
+        f"{stats_text}\n\nВыберите раздел:",
+        reply_markup=keyboards.get_admin_orders_keyboard(stats, archived_count, order_type)
     )
     
     await state.clear()
 
 
 @router.callback_query(F.data.startswith("set_status:"))
-async def set_order_status(callback: CallbackQuery):
+async def set_order_status(callback: CallbackQuery, state: FSMContext):
     """Изменить статус заказа"""
     if not is_admin(callback.from_user.id):
         await callback.answer("У вас нет доступа", show_alert=True)
@@ -453,14 +751,36 @@ async def set_order_status(callback: CallbackQuery):
     # Отправляем уведомление пользователю
     await notify_user_order_status_changed(callback.bot, order, status_name)
     
+    data = await state.get_data()
+    order_type = data.get('admin_order_type') or order.get('order_type') or '3d_print'
+    current_list_status = data.get('admin_order_status')
+    if current_list_status in ("all", "archived", None, "", "None"):
+        list_status = current_list_status or status_code
+    else:
+        list_status = current_list_status
+    current_page = data.get('admin_orders_page', 0)
+
+    await state.update_data(
+        admin_order_type=order_type,
+        admin_order_status=list_status,
+        admin_orders_page=current_page
+    )
+
     # Показываем обновленную информацию о заказе
-    await show_order_detail_after_update(callback.bot, callback.message.chat.id, order_id)
+    await show_order_detail_after_update(
+        callback.bot,
+        callback.message.chat.id,
+        order_id,
+        order_type=order_type,
+        list_status=list_status,
+        current_page=current_page
+    )
     
     await callback.answer(f"Статус изменен на '{status_name}'")
 
 
 @router.callback_query(F.data.startswith("admin_picked_up:"))
-async def admin_picked_up_order(callback: CallbackQuery):
+async def admin_picked_up_order(callback: CallbackQuery, state: FSMContext):
     """Обработка нажатия кнопки 'Забрал' администратором"""
     if not is_admin(callback.from_user.id):
         await callback.answer("У вас нет доступа", show_alert=True)
@@ -481,22 +801,26 @@ async def admin_picked_up_order(callback: CallbackQuery):
     success = await database.db.archive_order(order_id)
     
     if success:
-        # Получаем статистику для обновления меню
-        stats = await database.db.get_orders_statistics()
-        archived_orders = await database.db.get_archived_orders()
-        archived_count = len(archived_orders)
-        
-        stats_text = "📊 Статистика:\n"
-        stats_text += f"• Все заказы: {stats.get('all', 0)} шт\n"
-        stats_text += f"• В ожидании: {stats.get('pending', 0)} шт\n"
-        stats_text += f"• В работе: {stats.get('in_progress', 0)} шт\n"
-        stats_text += f"• Готов: {stats.get('ready', 0)} шт\n"
-        stats_text += f"• Архив: {archived_count} шт\n"
-        
+        order_type = order.get('order_type', '3d_print')
+        stats = await database.db.get_orders_statistics(order_type)
+        archived_count = await database.db.count_archived_orders(order_type)
+        order_type_name = config.ORDER_TYPES.get(order_type, order_type)
+
+        await state.update_data(admin_order_type=order_type, admin_order_status='archived', admin_orders_page=0)
+
+        stats_text = (
+            f"• В ожидании: {stats.get('pending', 0)} шт\n"
+            f"• В работе: {stats.get('in_progress', 0)} шт\n"
+            f"• Готов: {stats.get('ready', 0)} шт\n"
+            f"• Архив: {archived_count} шт\n"
+            f"• Всего (без архива): {stats.get('all', 0)} шт"
+        )
+
         await callback.message.edit_text(
             f"✅ Заказ №{order_id} перемещен в архив.\n\n"
-            f"{stats_text}\nВыберите фильтр:",
-            reply_markup=keyboards.get_admin_orders_keyboard(stats, archived_count)
+            f"📦 Заказы — {order_type_name}\n\n"
+            f"{stats_text}\n\nВыберите раздел:",
+            reply_markup=keyboards.get_admin_orders_keyboard(stats, archived_count, order_type)
         )
         logger.info(f"Администратор {callback.from_user.id} пометил заказ №{order_id} как полученный (перемещен в архив)")
     else:
@@ -505,7 +829,14 @@ async def admin_picked_up_order(callback: CallbackQuery):
     await callback.answer()
 
 
-async def show_order_detail_after_update(bot: Bot, chat_id: int, order_id: int):
+async def show_order_detail_after_update(
+    bot: Bot,
+    chat_id: int,
+    order_id: int,
+    order_type: str | None = None,
+    list_status: str | None = None,
+    current_page: int | None = None
+):
     """Показать обновленную информацию о заказе после изменения статуса"""
     order = await database.db.get_order(order_id)
     
@@ -515,6 +846,8 @@ async def show_order_detail_after_update(bot: Bot, chat_id: int, order_id: int):
     status_code = order.get('status_code', 'unknown')
     status_name = order.get('status_name', 'Неизвестно')
     material_name = order.get('material_name', 'Не указан')
+    order_type_code = order.get('order_type', order_type or '3d_print')
+    order_type_name = config.ORDER_TYPES.get(order_type_code, order_type_code)
     
     # Формируем информацию о пользователе
     user_info = f"{order['first_name']} {order['last_name']}"
@@ -526,6 +859,7 @@ async def show_order_detail_after_update(bot: Bot, chat_id: int, order_id: int):
         f"📋 Заказ №{order['id']}\n\n"
         f"📅 Дата создания: {order['created_at']}\n"
         f"👤 Заказчик: {user_info}\n"
+        f"⚙️ Тип: {order_type_name}\n"
         f"📦 Название детали: {order['part_name']}\n"
         f"🧪 Материал: {material_name}\n"
         f"📊 Статус: {status_name}\n"
@@ -548,61 +882,74 @@ async def show_order_detail_after_update(bot: Bot, chat_id: int, order_id: int):
     await bot.send_message(
         chat_id,
         "Выберите действие:",
-        reply_markup=keyboards.get_order_detail_keyboard(order_id, status_code, is_admin=True)
+            reply_markup=keyboards.get_order_detail_keyboard(
+                order_id,
+                status_code,
+                is_admin=True,
+                order_type=order_type_code,
+                list_status=list_status,
+                current_page=current_page
+            )
     )
 
 
 @router.callback_query(F.data == "admin_manage_materials")
-async def manage_materials(callback: CallbackQuery):
+async def manage_materials(callback: CallbackQuery, state: FSMContext):
     """Управление материалами"""
     if not is_admin(callback.from_user.id):
         await callback.answer("У вас нет доступа", show_alert=True)
         return
     
-    # Получаем материалы со статистикой использования
-    materials = await database.db.get_materials_with_usage_count()
-    
-    # Формируем текст со списком материалов
-    if materials:
-        materials_text = "📋 Доступные материалы:\n\n"
-        for material in materials:
-            usage_count = material.get('usage_count', 0)
-            materials_text += f"• {material['name']}"
-            if usage_count > 0:
-                materials_text += f" (использован {usage_count} раз"
-                if usage_count == 1:
-                    materials_text += ")"
-                elif usage_count < 5:
-                    materials_text += "а)"
-                else:
-                    materials_text += ")"
-            materials_text += "\n"
-        materials_text += f"\nВсего материалов: {len(materials)}"
-    else:
-        materials_text = "📋 Доступные материалы:\n\nМатериалы не добавлены."
-    
+    await state.update_data(material_management_type=None)
+
+    print_materials = await database.db.get_materials_with_usage_count('3d_print')
+    laser_materials = await database.db.get_materials_with_usage_count('laser_cut')
+
+    summary = (
+        "📋 Материалы по категориям:\n\n"
+        f"• Для 3D печати: {len(print_materials)} шт\n"
+        f"• Для лазерной резки: {len(laser_materials)} шт\n"
+    )
+
     await callback.message.edit_text(
-        f"🔧 Управление материалами\n\n{materials_text}\n\nВыберите действие:",
-        reply_markup=keyboards.get_manage_materials_keyboard()
+        f"🔧 Управление материалами\n\n{summary}\nВыберите категорию:",
+        reply_markup=keyboards.get_admin_materials_type_keyboard({
+            "3d_print": len(print_materials),
+            "laser_cut": len(laser_materials)
+        })
     )
     await callback.answer()
 
 
 
 
-@router.callback_query(F.data == "admin_add_material")
+@router.callback_query(F.data.startswith("admin_add_material:"))
 async def add_material_start(callback: CallbackQuery, state: FSMContext):
     """Начать добавление материала"""
     if not is_admin(callback.from_user.id):
         await callback.answer("У вас нет доступа", show_alert=True)
         return
     
+    material_type = callback.data.split(":")[1]
+    await state.update_data(material_management_type=material_type)
+
+    if material_type == "laser_cut":
+        prompt = (
+            "Введите название материала для лазерной резки.\n\n"
+            "Пример: фанера 3 мм\n"
+            "Можно указывать толщину, тип древесины и т.д."
+        )
+    else:
+        prompt = (
+            "Введите название материала в формате \"цвет тип пластика\".\n\n"
+            "Примеры:\n"
+            "• зеленый PETG\n"
+            "• синий PLA\n"
+            "• красный ABS"
+        )
+
     await callback.message.edit_text(
-        "Введите название материала в формате: \"цвет тип\"\n\n"
-        "Примеры:\n"
-        "• зеленый PETG\n"
-        "• синий PLA\n"
-        "• красный ABS"
+        prompt
     )
     await state.set_state(states.MaterialManagementStates.waiting_for_material_name)
     await callback.answer()
@@ -620,15 +967,19 @@ async def add_material_process(message: Message, state: FSMContext):
         await message.answer("Пожалуйста, введите корректное название в формате \"цвет тип\":")
         return
     
-    success = await database.db.add_material(material_name)
+    data = await state.get_data()
+    material_type = data.get('material_management_type') or '3d_print'
+    
+    success = await database.db.add_material(material_name, material_type)
     
     if success:
         # Получаем обновленный список материалов со статистикой
-        materials = await database.db.get_materials_with_usage_count()
+        materials = await database.db.get_materials_with_usage_count(material_type)
+        header = "для лазерной резки" if material_type == "laser_cut" else "для 3D печати"
         
         # Формируем текст со списком материалов
         if materials:
-            materials_text = "📋 Доступные материалы:\n\n"
+            materials_text = f"📋 Доступные материалы {header}:\n\n"
             for material in materials:
                 usage_count = material.get('usage_count', 0)
                 materials_text += f"• {material['name']}"
@@ -643,13 +994,13 @@ async def add_material_process(message: Message, state: FSMContext):
                 materials_text += "\n"
             materials_text += f"\nВсего материалов: {len(materials)}"
         else:
-            materials_text = "📋 Доступные материалы:\n\nМатериалы не добавлены."
+            materials_text = f"📋 Доступные материалы {header}:\n\nМатериалы не добавлены."
         
         await message.answer(
             f"✅ Материал '{material_name}' добавлен!\n\n"
             f"{materials_text}\n\n"
             "Выберите действие:",
-            reply_markup=keyboards.get_manage_materials_keyboard()
+            reply_markup=keyboards.get_manage_materials_keyboard(material_type)
         )
     else:
         await message.answer(f"❌ Материал '{material_name}' уже существует!")
@@ -657,14 +1008,17 @@ async def add_material_process(message: Message, state: FSMContext):
     await state.clear()
 
 
-@router.callback_query(F.data == "admin_delete_material")
-async def delete_material_start(callback: CallbackQuery):
+@router.callback_query(F.data.startswith("admin_delete_material:"))
+async def delete_material_start(callback: CallbackQuery, state: FSMContext):
     """Начать удаление материала"""
     if not is_admin(callback.from_user.id):
         await callback.answer("У вас нет доступа", show_alert=True)
         return
     
-    materials = await database.db.get_all_materials()
+    material_type = callback.data.split(":")[1]
+    await state.update_data(material_management_type=material_type)
+
+    materials = await database.db.get_all_materials(material_type)
     
     if not materials:
         await callback.message.edit_text("Нет материалов для удаления.")
@@ -673,28 +1027,30 @@ async def delete_material_start(callback: CallbackQuery):
     
     await callback.message.edit_text(
         "Выберите материал для удаления:",
-        reply_markup=keyboards.get_delete_materials_keyboard(materials)
+        reply_markup=keyboards.get_delete_materials_keyboard(materials, material_type)
     )
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("delete_material:"))
-async def delete_material_process(callback: CallbackQuery):
+async def delete_material_process(callback: CallbackQuery, state: FSMContext):
     """Обработка удаления материала"""
     if not is_admin(callback.from_user.id):
         await callback.answer("У вас нет доступа", show_alert=True)
         return
     
-    material_id = int(callback.data.split(":")[1])
+    _, material_type, material_id_str = callback.data.split(":")
+    material_id = int(material_id_str)
     success = await database.db.delete_material(material_id)
     
     if success:
         # Получаем обновленный список материалов со статистикой
-        materials = await database.db.get_materials_with_usage_count()
+        materials = await database.db.get_materials_with_usage_count(material_type)
+        header = "для лазерной резки" if material_type == "laser_cut" else "для 3D печати"
         
         # Формируем текст со списком материалов
         if materials:
-            materials_text = "📋 Доступные материалы:\n\n"
+            materials_text = f"📋 Доступные материалы {header}:\n\n"
             for material in materials:
                 usage_count = material.get('usage_count', 0)
                 materials_text += f"• {material['name']}"
@@ -709,11 +1065,11 @@ async def delete_material_process(callback: CallbackQuery):
                 materials_text += "\n"
             materials_text += f"\nВсего материалов: {len(materials)}"
         else:
-            materials_text = "📋 Доступные материалы:\n\nМатериалы не добавлены."
+            materials_text = f"📋 Доступные материалы {header}:\n\nМатериалы не добавлены."
         
         await callback.message.edit_text(
             f"✅ Материал удален!\n\n{materials_text}\n\nВыберите действие:",
-            reply_markup=keyboards.get_manage_materials_keyboard()
+            reply_markup=keyboards.get_manage_materials_keyboard(material_type)
         )
     else:
         await callback.message.edit_text("❌ Ошибка при удалении!")

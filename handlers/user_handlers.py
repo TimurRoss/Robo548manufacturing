@@ -7,7 +7,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
 from pathlib import Path
 from loguru import logger
-from typing import Union
 
 import config
 import database
@@ -111,16 +110,61 @@ async def cmd_new_order(message: Message, state: FSMContext):
         username
     )
     
+    await state.clear()
+    await state.set_state(states.OrderCreationStates.waiting_for_order_type)
     await message.answer(
         "Начинаем создание заказа.\n\n"
-        "Загрузите фото вашей модели (скриншот, чертеж):"
+        "Пожалуйста, выберите тип заказа:",
+        reply_markup=keyboards.get_order_type_keyboard()
     )
+
+
+@router.callback_query(F.data.startswith("select_order_type"), states.OrderCreationStates.waiting_for_order_type)
+async def process_order_type(callback: CallbackQuery, state: FSMContext):
+    """Обработка выбора типа заказа"""
+    order_type = callback.data.split(":")[1]
+    order_type_name = config.ORDER_TYPES.get(order_type, "3D-печать")
+    
+    await state.update_data(order_type=order_type)
+    
+    if order_type == "laser_cut":
+        prompt = (
+            f"Вы выбрали: {order_type_name}.\n\n"
+            "Загрузите фото вашей заготовки или схемы (скриншот, чертеж):"
+        )
+    else:
+        prompt = (
+            f"Вы выбрали: {order_type_name}.\n\n"
+            "Загрузите фото вашей модели (скриншот, чертеж):"
+        )
+    
+    await callback.message.edit_text(prompt)
     await state.set_state(states.OrderCreationStates.waiting_for_photo)
+    await callback.answer()
+
+
+@router.message(states.OrderCreationStates.waiting_for_order_type)
+async def process_order_type_text(message: Message):
+    """Подсказываем выбрать тип заказа через кнопки"""
+    await message.answer(
+        "Пожалуйста, выберите тип заказа, используя кнопки ниже:",
+        reply_markup=keyboards.get_order_type_keyboard()
+    )
 
 
 @router.message(states.OrderCreationStates.waiting_for_photo, F.photo)
 async def process_photo(message: Message, state: FSMContext):
     """Обработка загруженного фото"""
+    data = await state.get_data()
+    order_type = data.get("order_type")
+    if not order_type:
+        await message.answer(
+            "Пожалуйста, сначала выберите тип заказа:",
+            reply_markup=keyboards.get_order_type_keyboard()
+        )
+        await state.set_state(states.OrderCreationStates.waiting_for_order_type)
+        return
+    
     photo = message.photo[-1]  # Берем фото с наибольшим разрешением
     
     # Скачиваем фото
@@ -232,8 +276,13 @@ async def process_part_name(message: Message, state: FSMContext):
         await state.clear()
         return
     
+    if order_type == "laser_cut":
+        material_prompt = "Выберите материал для лазерной резки:"
+    else:
+        material_prompt = "Выберите материал (цвет + тип пластика):"
+
     await message.answer(
-        "Выберите материал (цвет + тип пластика):",
+        material_prompt,
         reply_markup=keyboards.get_materials_keyboard(materials)
     )
     await state.set_state(states.OrderCreationStates.waiting_for_material)
@@ -457,10 +506,13 @@ async def show_user_order_detail(callback: CallbackQuery):
     status_name = order.get('status_name', 'Неизвестно')
     material_name = order.get('material_name', 'Не указан')
     status_code = order.get('status_code', 'unknown')
+    order_type_code = order.get('order_type', '3d_print')
+    order_type_name = config.ORDER_TYPES.get(order_type_code, order_type_code)
     
     order_text = (
         f"📋 Заказ №{order['id']}\n\n"
         f"📅 Дата создания: {order['created_at']}\n"
+        f"⚙️ Тип: {order_type_name}\n"
         f"📦 Название детали: {order['part_name']}\n"
         f"🧪 Материал: {material_name}\n"
         f"📊 Статус: {status_name}\n"

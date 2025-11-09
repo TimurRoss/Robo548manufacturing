@@ -4,6 +4,8 @@
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
+import config
+
 
 def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
     """Главное меню для пользователей"""
@@ -33,152 +35,205 @@ def get_admin_main_keyboard() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def get_admin_orders_keyboard(stats: dict = None, archived_count: int = 0) -> InlineKeyboardMarkup:
-    """Клавиатура для выбора фильтра заказов в админ-панели"""
+def get_order_type_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура выбора типа заказа для пользователя"""
     builder = InlineKeyboardBuilder()
-    
-    # Если статистика не передана, используем пустые значения
-    if stats is None:
-        stats = {}
-    
-    all_count = stats.get('all', 0)
-    pending_count = stats.get('pending', 0)
-    in_progress_count = stats.get('in_progress', 0)
-    ready_count = stats.get('ready', 0)
-    
+    for order_type, title in config.ORDER_TYPES.items():
+        builder.add(InlineKeyboardButton(text=title, callback_data=f"select_order_type:{order_type}"))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def get_admin_order_types_keyboard(order_stats: dict, archived_counts: dict) -> InlineKeyboardMarkup:
+    """Клавиатура выбора типа заказов для админ-панели"""
+    builder = InlineKeyboardBuilder()
+    for order_type, title in config.ORDER_TYPES.items():
+        orders_total = order_stats.get(order_type, {}).get("all", 0)
+        archived_total = archived_counts.get(order_type, 0)
+        total = orders_total + archived_total
+        button_text = f"{title} ({total} шт)" if total > 0 else title
+        builder.add(InlineKeyboardButton(text=button_text, callback_data=f"admin_orders_type:{order_type}"))
+    builder.add(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back_to_main"))
+    builder.adjust(1, 1, 1)
+    return builder.as_markup()
+
+
+def get_admin_orders_keyboard(stats: dict, archived_count: int, order_type: str) -> InlineKeyboardMarkup:
+    """Клавиатура для выбора раздела заказов внутри конкретного типа"""
+    builder = InlineKeyboardBuilder()
+
+    all_count = stats.get("all", 0)
+    pending_count = stats.get("pending", 0)
+    in_progress_count = stats.get("in_progress", 0)
+    ready_count = stats.get("ready", 0)
+
     builder.add(InlineKeyboardButton(
         text=f"Все заказы ({all_count} шт)" if all_count > 0 else "Все заказы",
-        callback_data="admin_orders:all"
+        callback_data=f"admin_orders:{order_type}:all"
     ))
     builder.add(InlineKeyboardButton(
         text=f"В ожидании ({pending_count} шт)" if pending_count > 0 else "В ожидании",
-        callback_data="admin_orders:pending"
+        callback_data=f"admin_orders:{order_type}:pending"
     ))
     builder.add(InlineKeyboardButton(
         text=f"В работе ({in_progress_count} шт)" if in_progress_count > 0 else "В работе",
-        callback_data="admin_orders:in_progress"
+        callback_data=f"admin_orders:{order_type}:in_progress"
     ))
     builder.add(InlineKeyboardButton(
         text=f"Готов ({ready_count} шт)" if ready_count > 0 else "Готов",
-        callback_data="admin_orders:ready"
+        callback_data=f"admin_orders:{order_type}:ready"
     ))
     builder.add(InlineKeyboardButton(
         text=f"📦 Архив ({archived_count} шт)" if archived_count > 0 else "📦 Архив",
-        callback_data="admin_orders:archived"
+        callback_data=f"admin_orders:{order_type}:archived"
     ))
+    builder.add(InlineKeyboardButton(text="⬅️ К типам заказов", callback_data="admin_back_to_order_types"))
     builder.add(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back_to_main"))
-    builder.adjust(1, 2, 2, 1)
+    builder.adjust(1, 2, 2, 1, 1)
     return builder.as_markup()
 
 
 def get_orders_list_keyboard(
-    orders: list, 
-    prefix: str = "order", 
-    status_code: str = None,
+    orders: list,
+    prefix: str = "order",
+    status_code: str | None = None,
     current_page: int = 0,
-    total_pages: int = 1
+    total_pages: int = 1,
+    order_type: str | None = None,
+    back_callback: str | None = None,
+    back_text: str = "⬅️ Назад"
 ) -> InlineKeyboardMarkup:
     """Клавиатура со списком заказов с пагинацией"""
     builder = InlineKeyboardBuilder()
-    
-    # Добавляем заказы (в столбик - по 1 кнопке в ряд)
+
     for order in orders:
-        order_id = order['id']
-        status_name = order.get('status_name', 'Без статуса')
+        order_id = order["id"]
+        status_name = order.get("status_name", "Без статуса")
         text = f"Заказ №{order_id} ({status_name})"
-        builder.add(InlineKeyboardButton(text=text, callback_data=f"{prefix}:{order_id}"))
-    
-    # Добавляем кнопки навигации если есть несколько страниц
+
+        if prefix == "admin_order":
+            callback_data = f"admin_order:{order_type}:{status_code}:{order_id}:{current_page}"
+        else:
+            callback_data = f"{prefix}:{order_id}"
+
+        builder.add(InlineKeyboardButton(text=text, callback_data=callback_data))
+
     nav_buttons_count = 0
     if total_pages > 1:
         nav_buttons = []
-        
-        # Кнопка "Назад"
+
         if current_page > 0:
-            callback_data = f"admin_orders_page:{status_code}:{current_page - 1}"
+            if prefix == "admin_order":
+                callback_data = f"admin_orders_page:{order_type}:{status_code}:{current_page - 1}"
+            else:
+                callback_data = "noop"
             nav_buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=callback_data))
             nav_buttons_count += 1
         else:
-            # Пустая кнопка для выравнивания
             nav_buttons.append(InlineKeyboardButton(text=" ", callback_data="noop"))
             nav_buttons_count += 1
-        
-        # Информация о странице
+
         nav_buttons.append(InlineKeyboardButton(text=f"{current_page + 1}/{total_pages}", callback_data="noop"))
         nav_buttons_count += 1
-        
-        # Кнопка "Вперед"
+
         if current_page < total_pages - 1:
-            callback_data = f"admin_orders_page:{status_code}:{current_page + 1}"
+            if prefix == "admin_order":
+                callback_data = f"admin_orders_page:{order_type}:{status_code}:{current_page + 1}"
+            else:
+                callback_data = "noop"
             nav_buttons.append(InlineKeyboardButton(text="Вперед ➡️", callback_data=callback_data))
             nav_buttons_count += 1
         else:
-            # Пустая кнопка для выравнивания
             nav_buttons.append(InlineKeyboardButton(text=" ", callback_data="noop"))
             nav_buttons_count += 1
-        
+
         builder.add(*nav_buttons)
-    
-    # Кнопка "Назад к списку"
-    builder.add(InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="admin_back_to_orders"))
-    
-    # Настраиваем расположение: все заказы по 1 в ряд (столбик), навигация по 3 в ряд, кнопка "Назад" отдельно
+
+    if prefix == "admin_order":
+        if back_callback:
+            builder.add(InlineKeyboardButton(text=back_text, callback_data=back_callback))
+    else:
+        builder.add(InlineKeyboardButton(text=back_text, callback_data=back_callback or "user_back_to_orders"))
+
     orders_count = len(orders)
-    adjust_params = [1] * orders_count  # Каждый заказ по 1 кнопке в ряд
+    adjust_params = [1] * orders_count
     if nav_buttons_count > 0:
-        adjust_params.append(nav_buttons_count)  # Все кнопки навигации в один ряд
-    adjust_params.append(1)  # Кнопка "Назад к списку" отдельно
-    
+        adjust_params.append(nav_buttons_count)
+    adjust_params.append(1)
+
     builder.adjust(*adjust_params)
     return builder.as_markup()
 
 
-def get_order_detail_keyboard(order_id: int, current_status: str, is_admin: bool = True) -> InlineKeyboardMarkup:
+def get_order_detail_keyboard(
+    order_id: int,
+    current_status: str,
+    is_admin: bool = True,
+    order_type: str | None = None,
+    list_status: str | None = None,
+    current_page: int | None = None
+) -> InlineKeyboardMarkup:
     """Клавиатура для детального просмотра заказа"""
     builder = InlineKeyboardBuilder()
-    
-    # Для архивированных заказов показываем только кнопку "Назад"
+
+    back_status = list_status or current_status
+    page_token = current_page if current_page is not None else 0
+
     if current_status == "archived":
         if is_admin:
             builder.add(InlineKeyboardButton(text="Скачать модель", callback_data=f"download_model:{order_id}"))
-            builder.add(InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="admin_back_to_orders"))
+            if order_type:
+                builder.add(InlineKeyboardButton(
+                    text="⬅️ Назад к списку",
+                    callback_data=f"admin_back_to_orders:{order_type}:{back_status}:{page_token}"
+                ))
+            else:
+                builder.add(InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="admin_back_to_orders"))
             builder.adjust(1, 1)
         else:
             builder.add(InlineKeyboardButton(text="⬅️ Назад", callback_data="user_back_to_orders"))
             builder.adjust(1)
         return builder.as_markup()
-    
+
     if is_admin:
         builder.add(InlineKeyboardButton(text="Скачать модель", callback_data=f"download_model:{order_id}"))
-        
+
         if current_status == "pending":
             builder.add(InlineKeyboardButton(text="Принять в работу", callback_data=f"set_status:{order_id}:in_progress"))
-            builder.add(InlineKeyboardButton(text="Отклонить", callback_data=f"reject_order:{order_id}"))
+            reject_callback = f"reject_order:{order_id}"
+            if order_type:
+                reject_callback = f"reject_order:{order_id}:{order_type}:{back_status}:{page_token}"
+            builder.add(InlineKeyboardButton(text="Отклонить", callback_data=reject_callback))
         elif current_status == "in_progress":
             builder.add(InlineKeyboardButton(text="Готов", callback_data=f"set_status:{order_id}:ready"))
             builder.add(InlineKeyboardButton(text="В ожидании", callback_data=f"set_status:{order_id}:pending"))
         elif current_status == "ready":
             builder.add(InlineKeyboardButton(text="В работу", callback_data=f"set_status:{order_id}:in_progress"))
             builder.add(InlineKeyboardButton(text="✅ Забрал", callback_data=f"admin_picked_up:{order_id}"))
-        
-        builder.add(InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="admin_back_to_orders"))
+
+        if order_type:
+            builder.add(InlineKeyboardButton(
+                text="⬅️ Назад к списку",
+                callback_data=f"admin_back_to_orders:{order_type}:{back_status}:{page_token}"
+            ))
+        else:
+            builder.add(InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="admin_back_to_orders"))
         builder.adjust(1, 2, 1)
     else:
-        # Для пользователя
         if current_status == "ready":
             builder.add(InlineKeyboardButton(text="✅ Забрал", callback_data=f"user_picked_up:{order_id}"))
         builder.add(InlineKeyboardButton(text="⬅️ Назад", callback_data="user_back_to_orders"))
         builder.adjust(1, 1)
-    
+
     return builder.as_markup()
 
 
 def get_materials_keyboard(materials: list) -> InlineKeyboardMarkup:
-    """Клавиатура для выбора материала (цвет + тип)"""
+    """Клавиатура для выбора материала"""
     builder = InlineKeyboardBuilder()
     for material in materials:
         builder.add(InlineKeyboardButton(
-            text=material['name'],
+            text=material["name"],
             callback_data=f"select_material:{material['id']}"
         ))
     builder.adjust(2)
@@ -202,25 +257,45 @@ def get_confirm_order_keyboard() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def get_manage_materials_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура для управления материалами"""
+def get_admin_materials_type_keyboard(material_counts: dict) -> InlineKeyboardMarkup:
+    """Клавиатура выбора типа материалов"""
     builder = InlineKeyboardBuilder()
-    builder.add(InlineKeyboardButton(text="Добавить материал", callback_data="admin_add_material"))
-    builder.add(InlineKeyboardButton(text="Удалить материал", callback_data="admin_delete_material"))
+    laser_count = material_counts.get("laser_cut", 0)
+    print_count = material_counts.get("3d_print", 0)
+
+    builder.add(InlineKeyboardButton(
+        text=f"Для 3D печати ({print_count})" if print_count > 0 else "Для 3D печати",
+        callback_data="admin_materials_type:3d_print"
+    ))
+    builder.add(InlineKeyboardButton(
+        text=f"Для лазерной резки ({laser_count})" if laser_count > 0 else "Для лазерной резки",
+        callback_data="admin_materials_type:laser_cut"
+    ))
     builder.add(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back_to_main"))
-    builder.adjust(2, 1)
+    builder.adjust(1, 1, 1)
     return builder.as_markup()
 
 
-def get_delete_materials_keyboard(materials: list) -> InlineKeyboardMarkup:
-    """Клавиатура для выбора материала для удаления"""
+def get_manage_materials_keyboard(material_type: str) -> InlineKeyboardMarkup:
+    """Клавиатура управления материалами для выбранного типа"""
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(text="Добавить материал", callback_data=f"admin_add_material:{material_type}"))
+    builder.add(InlineKeyboardButton(text="Удалить материал", callback_data=f"admin_delete_material:{material_type}"))
+    builder.add(InlineKeyboardButton(text="⬅️ К выбору типа", callback_data="admin_back_to_material_types"))
+    builder.add(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back_to_main"))
+    builder.adjust(1, 1, 1, 1)
+    return builder.as_markup()
+
+
+def get_delete_materials_keyboard(materials: list, material_type: str) -> InlineKeyboardMarkup:
+    """Клавиатура для удаления материалов выбранного типа"""
     builder = InlineKeyboardBuilder()
     for material in materials:
         builder.add(InlineKeyboardButton(
-            text=material['name'],
-            callback_data=f"delete_material:{material['id']}"
+            text=material["name"],
+            callback_data=f"delete_material:{material_type}:{material['id']}"
         ))
-    builder.add(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_manage_materials"))
-    builder.adjust(2, 1)
+    builder.add(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin_materials_back:{material_type}"))
+    builder.adjust(1)
     return builder.as_markup()
 

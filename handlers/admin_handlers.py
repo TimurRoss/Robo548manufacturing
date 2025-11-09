@@ -2,6 +2,7 @@
 Обработчики для администраторов
 """
 import asyncio
+import html
 
 from aiogram import Router, F, Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
@@ -612,30 +613,40 @@ async def show_order_detail(callback: CallbackQuery, state: FSMContext):
     order_type_name = config.ORDER_TYPES.get(order_type_code, order_type_code)
     
     # Формируем информацию о пользователе
-    user_info = f"{order['first_name']} {order['last_name']}"
-    if order.get('username'):
-        user_info += f" (@{order['username']})"
-    user_info += f"\n🆔 Telegram ID: {order['user_id']}"
+    full_name = f"{order['first_name']} {order['last_name']}".strip()
+    full_name_html = html.escape(full_name) if full_name else "—"
+    username_value = order.get('username')
+    if username_value:
+        user_line = f"{full_name_html} (@{html.escape(username_value)})"
+    else:
+        user_line = full_name_html
+    user_info = f"{user_line}\n🆔 Telegram ID: {order['user_id']}"
+
+    material_display = material_name if material_name else "Не указан"
     
     # Формируем текст с информацией о заказе
     order_text = (
         f"📋 Заказ №{order['id']}\n\n"
-        f"📅 Дата создания: {order['created_at']}\n"
+        f"📅 Дата создания: {html.escape(order['created_at'])}\n"
         f"👤 Заказчик: {user_info}\n"
-        f"⚙️ Тип: {order_type_name}\n"
-        f"📦 Название детали: {order['part_name']}\n"
-        f"🧪 Материал: {material_name}\n"
-        f"📊 Статус: {status_name}\n"
+        f"⚙️ Тип: {html.escape(order_type_name)}\n"
+        f"📦 Название детали: {html.escape(order['part_name'])}\n"
+        f"📊 Статус: {html.escape(status_name)}\n"
     )
     
     if order.get('photo_caption'):
-        order_text += f"📝 Подпись к фото: {order['photo_caption']}\n"
+        order_text += f"📝 Подпись к фото: {html.escape(order['photo_caption'])}\n"
+
+    order_text += (
+        "\n"
+        f"<b>Материал:</b>\n{html.escape(material_display)}"
+    )
     
     if order.get('comment'):
-        order_text += f"💬 Комментарий к заказу: {order['comment']}\n"
+        order_text += f"\n\n<b>Комментарий:</b>\n{html.escape(order['comment'])}"
     
     if order.get('rejection_reason'):
-        order_text += f"\n❌ Причина отклонения: {order['rejection_reason']}\n"
+        order_text += f"\n\n❌ Причина отклонения: {html.escape(order['rejection_reason'])}\n"
     
     # Отправляем фото, если есть, иначе редактируем текст
     if order.get('photo_path') and Path(order['photo_path']).exists():
@@ -645,7 +656,8 @@ async def show_order_detail(callback: CallbackQuery, state: FSMContext):
             await callback.bot.send_photo(
                 callback.message.chat.id,
                 photo_file,
-                caption=order_text
+                caption=order_text,
+                parse_mode="HTML"
             )
             # Отправляем клавиатуру отдельным сообщением
             await callback.bot.send_message(
@@ -662,7 +674,7 @@ async def show_order_detail(callback: CallbackQuery, state: FSMContext):
             )
         except Exception as e:
             logger.error(f"Ошибка при отправке фото: {e}")
-            await callback.message.edit_text(order_text)
+            await callback.message.edit_text(order_text, parse_mode="HTML")
             # Отправляем клавиатуру отдельным сообщением
             await callback.bot.send_message(
                 callback.message.chat.id,
@@ -677,7 +689,7 @@ async def show_order_detail(callback: CallbackQuery, state: FSMContext):
                 )
             )
     else:
-        await callback.message.edit_text(order_text)
+        await callback.message.edit_text(order_text, parse_mode="HTML")
         # Отправляем клавиатуру отдельным сообщением
         await callback.bot.send_message(
             callback.message.chat.id,
@@ -990,34 +1002,50 @@ async def show_order_detail_after_update(
     order_type_name = config.ORDER_TYPES.get(order_type_code, order_type_code)
     
     # Формируем информацию о пользователе
-    user_info = f"{order['first_name']} {order['last_name']}"
-    if order.get('username'):
-        user_info += f" (@{order['username']})"
-    user_info += f"\n🆔 Telegram ID: {order['user_id']}"
-    
+    full_name = f"{order['first_name']} {order['last_name']}".strip()
+    full_name_html = html.escape(full_name) if full_name else "—"
+    username_value = order.get('username')
+    if username_value:
+        user_line = f"{full_name_html} (@{html.escape(username_value)})"
+    else:
+        user_line = full_name_html
+    user_info = f"{user_line}\n🆔 Telegram ID: {order['user_id']}"
+
+    material_display = material_name if material_name else "Не указан"
+
     order_text = (
         f"📋 Заказ №{order['id']}\n\n"
-        f"📅 Дата создания: {order['created_at']}\n"
+        f"📅 Дата создания: {html.escape(order['created_at'])}\n"
         f"👤 Заказчик: {user_info}\n"
-        f"⚙️ Тип: {order_type_name}\n"
-        f"📦 Название детали: {order['part_name']}\n"
-        f"🧪 Материал: {material_name}\n"
-        f"📊 Статус: {status_name}\n"
+        f"⚙️ Тип: {html.escape(order_type_name)}\n"
+        f"📦 Название детали: {html.escape(order['part_name'])}\n"
+        f"📊 Статус: {html.escape(status_name)}\n"
     )
     
     if order.get('photo_caption'):
-        order_text += f"📝 Подпись к фото: {order['photo_caption']}\n"
+        order_text += f"📝 Подпись к фото: {html.escape(order['photo_caption'])}\n"
+
+    order_text += (
+        "\n"
+        f"<b>Материал:</b>\n{html.escape(material_display)}"
+    )
     
     if order.get('comment'):
-        order_text += f"💬 Комментарий к заказу: {order['comment']}\n"
+        order_text += f"\n\n<b>Комментарий:</b>\n{html.escape(order['comment'])}"
     
     if order.get('rejection_reason'):
-        order_text += f"\n❌ Причина отклонения: {order['rejection_reason']}\n"
+        order_text += f"\n\n❌ Причина отклонения: {html.escape(order['rejection_reason'])}\n"
     
+    status_message = (
+        f"✅ Статус изменен на '{html.escape(status_name)}'\n\n"
+        f"{order_text}"
+    )
+
     # Отправляем обновленное сообщение
     await bot.send_message(
         chat_id,
-        f"✅ Статус изменен на '{status_name}'\n\n{order_text}"
+        status_message,
+        parse_mode="HTML"
     )
     await bot.send_message(
         chat_id,

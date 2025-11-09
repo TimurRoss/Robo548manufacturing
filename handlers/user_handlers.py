@@ -1,6 +1,8 @@
 """
 Обработчики для пользователей
 """
+import html
+
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
@@ -351,30 +353,41 @@ async def _show_order_summary(message_or_callback, state: FSMContext):
 
     order_type_name = config.ORDER_TYPES.get(order_type, order_type)
 
+    order_type_name_html = html.escape(order_type_name)
+    user_full_name_html = html.escape(f"{user['first_name']} {user['last_name']}".strip())
+    part_name_html = html.escape(data['part_name'])
+    material_name_html = html.escape(material_name)
+    original_filename_html = html.escape(data['original_filename'])
+    comment_text = data.get('comment')
+    comment_html = html.escape(comment_text) if comment_text else None
+
     summary = (
-        f"📋 Проверьте данные заказа:\n\n"
-        f"⚙️ Тип: {order_type_name}\n"
-        f"👤 Заказчик: {user['first_name']} {user['last_name']}\n"
-        f"📦 Название детали: {data['part_name']}\n"
-        f"🧪 Материал: {material_name}\n"
+        "📋 Проверьте данные заказа:\n\n"
+        f"⚙️ Тип: {order_type_name_html}\n"
+        f"👤 Заказчик: {user_full_name_html}\n"
+        f"📦 Название детали: {part_name_html}\n"
         f"📷 Фото: прикреплено\n"
-        f"📁 Модель: {data['original_filename']}\n"
+        f"📁 Модель: {original_filename_html}\n"
+        "\n"
+        f"<b>Материал:</b>\n{material_name_html}"
     )
 
-    if data.get('comment'):
-        summary += f"💬 Комментарий: {data['comment']}\n"
+    if comment_html:
+        summary += f"\n\n<b>Комментарий:</b>\n{comment_html}"
 
-    summary += "\nВсё верно?"
+    summary += "\n\nВсё верно?"
 
     if isinstance(message_or_callback, CallbackQuery):
         await message.edit_text(
             summary,
-            reply_markup=keyboards.get_confirm_order_keyboard()
+            reply_markup=keyboards.get_confirm_order_keyboard(),
+            parse_mode="HTML"
         )
     else:
         await message.answer(
             summary,
-            reply_markup=keyboards.get_confirm_order_keyboard()
+            reply_markup=keyboards.get_confirm_order_keyboard(),
+            parse_mode="HTML"
         )
 
     await state.set_state(states.OrderCreationStates.waiting_for_confirm)
@@ -511,19 +524,21 @@ async def show_user_order_detail(callback: CallbackQuery):
     
     order_text = (
         f"📋 Заказ №{order['id']}\n\n"
-        f"📅 Дата создания: {order['created_at']}\n"
-        f"⚙️ Тип: {order_type_name}\n"
-        f"📦 Название детали: {order['part_name']}\n"
-        f"🧪 Материал: {material_name}\n"
-        f"📊 Статус: {status_name}\n"
+        f"📅 Дата создания: {html.escape(order['created_at'])}\n"
+        f"⚙️ Тип: {html.escape(order_type_name)}\n"
+        f"📦 Название детали: {html.escape(order['part_name'])}\n"
+        f"📊 Статус: {html.escape(status_name)}\n"
+        "\n"
+        f"<b>Материал:</b>\n{html.escape(material_name)}"
     )
     
     if order.get('comment'):
-        order_text += f"💬 Комментарий: {order['comment']}\n"
+        order_text += f"\n\n<b>Комментарий:</b>\n{html.escape(order['comment'])}"
     
     await callback.message.edit_text(
         order_text,
-        reply_markup=keyboards.get_order_detail_keyboard(order_id, status_code, is_admin=False)
+        reply_markup=keyboards.get_order_detail_keyboard(order_id, status_code, is_admin=False),
+        parse_mode="HTML"
     )
     await callback.answer()
 

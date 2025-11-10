@@ -295,6 +295,35 @@ async def _render_orders_overview(message: Message, order_type: str, state: FSMC
     )
 
 
+async def _render_orders_materials(message: Message, order_type: str, state: FSMContext):
+    """Отобразить список материалов для фильтрации заказов"""
+    order_type_name = config.ORDER_TYPES.get(order_type, order_type)
+    materials = await database.db.get_all_materials(order_type)
+
+    await state.update_data(
+        admin_order_type=order_type,
+        admin_order_status="materials",
+        admin_orders_page=0,
+        admin_orders_material_id=None
+    )
+
+    if materials:
+        body_text = (
+            "Выберите материал.\n"
+            "Показываются только заказы в статусах \"В ожидании\" и \"В работе\"."
+        )
+    else:
+        body_text = (
+            "Материалы для этого типа заказов отсутствуют.\n"
+            "Добавьте материалы в разделе управления материалами."
+        )
+
+    await message.edit_text(
+        f"📦 Заказы — {order_type_name}\n\n{body_text}",
+        reply_markup=keyboards.get_admin_orders_materials_keyboard(materials, order_type)
+    )
+
+
 @router.callback_query(F.data.startswith("admin_orders_type:"))
 async def show_orders_type(callback: CallbackQuery, state: FSMContext):
     """Показать статистику и разделы для выбранного типа заказов"""
@@ -459,6 +488,19 @@ async def process_broadcast_message(message: Message, state: FSMContext):
     await state.update_data(broadcast_prompt_chat_id=None, broadcast_prompt_message_id=None)
     await state.set_state(None)
 
+
+@router.callback_query(F.data.startswith("admin_orders_materials:"))
+async def show_orders_materials(callback: CallbackQuery, state: FSMContext):
+    """Показать материалы для фильтрации заказов по материалу"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+
+    order_type = callback.data.split(":")[1]
+    await _render_orders_materials(callback.message, order_type, state)
+    await callback.answer()
+
+
 @router.callback_query(F.data == "admin_orders_menu")
 async def show_orders_menu(callback: CallbackQuery, state: FSMContext):
     """Показать меню фильтров заказов"""
@@ -531,11 +573,77 @@ async def show_orders_by_status(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("admin_orders_material:"))
+async def show_orders_by_material(callback: CallbackQuery, state: FSMContext):
+    """Показать заказы для выбранного материала"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+
+    try:
+        _, order_type, material_id_str = callback.data.split(":")
+        material_id = int(material_id_str)
+    except (ValueError, IndexError):
+        await callback.answer("Некорректные данные", show_alert=True)
+        return
+
+    material = await database.db.get_material(material_id)
+    if not material:
+        await callback.answer("Материал не найден", show_alert=True)
+        await _render_orders_materials(callback.message, order_type, state)
+        return
+
+    active_statuses = ("pending", "in_progress")
+    total_count = await database.db.count_orders_by_material(
+        material_id,
+        statuses=active_statuses,
+        order_type=order_type
+    )
+
+    if total_count == 0:
+        await callback.answer(
+            "Заказы с выбранным материалом отсутствуют в статусах \"В ожидании\" и \"В работе\".",
+            show_alert=True
+        )
+        await _render_orders_materials(callback.message, order_type, state)
+        return
+
+    await _show_orders_page(callback, state, order_type, f"material|{material_id}", page=0)
+    await callback.answer()
+
+
 async def _show_orders_page(callback: CallbackQuery, state: FSMContext, order_type: str, status_code: str, page: int = 0, orders_per_page: int = 6):
     """Показать страницу с заказами"""
     order_type_name = config.ORDER_TYPES.get(order_type, order_type)
 
-    if status_code == "all":
+    is_material_filter = False
+    material_id: int | None = None
+    material_name: str | None = None
+    active_material_statuses = ("pending", "in_progress")
+
+    if status_code and status_code.startswith("material|"):
+        is_material_filter = True
+        try:
+            material_id = int(status_code.split("|", 1)[1])
+        except (ValueError, IndexError):
+            await callback.answer("Некорректный материал", show_alert=True)
+            await _render_orders_materials(callback.message, order_type, state)
+            return
+
+        material = await database.db.get_material(material_id)
+        if not material:
+            await callback.answer("Материал не найден", show_alert=True)
+            await _render_orders_materials(callback.message, order_type, state)
+            return
+
+        material_name = material["name"]
+        total_count = await database.db.count_orders_by_material(
+            material_id,
+            statuses=active_material_statuses,
+            order_type=order_type
+        )
+        status_text = material_name
+    elif status_code == "all":
         total_count = await database.db.count_orders_by_status(None, order_type=order_type)
         status_text = "Все заказы"
     elif status_code == "archived":
@@ -546,16 +654,31 @@ async def _show_orders_page(callback: CallbackQuery, state: FSMContext, order_ty
         status_text = config.ORDER_STATUSES.get(status_code, status_code)
     
     if total_count == 0:
-        # Раздел пуст — возвращаемся к уровню выше (меню статусов)
-        await _render_orders_overview(callback.message, order_type, state)
-        await callback.answer("Раздел пуст. Возвращаемся к списку статусов.")
+        if is_material_filter:
+            await _render_orders_materials(callback.message, order_type, state)
+            await callback.answer(
+                "Заказы с выбранным материалом отсутствуют в статусах \"В ожидании\" и \"В работе\".",
+                show_alert=True
+            )
+        else:
+            # Раздел пуст — возвращаемся к уровню выше (меню статусов)
+            await _render_orders_overview(callback.message, order_type, state)
+            await callback.answer("Раздел пуст. Возвращаемся к списку статусов.")
         return
 
     total_pages = (total_count + orders_per_page - 1) // orders_per_page if total_count > 0 else 1
     page = min(page, max(total_pages - 1, 0))
     offset = page * orders_per_page
 
-    if status_code == "all":
+    if is_material_filter and material_id is not None:
+        orders = await database.db.get_orders_by_material(
+            material_id,
+            statuses=active_material_statuses,
+            order_type=order_type,
+            limit=orders_per_page,
+            offset=offset
+        )
+    elif status_code == "all":
         orders = await database.db.get_orders_by_status(None, order_type=order_type, limit=orders_per_page, offset=offset)
     elif status_code == "archived":
         orders = await database.db.get_archived_orders(order_type=order_type, limit=orders_per_page, offset=offset)
@@ -570,11 +693,19 @@ async def _show_orders_page(callback: CallbackQuery, state: FSMContext, order_ty
     await state.update_data(
         admin_order_type=order_type,
         admin_order_status=status_code,
-        admin_orders_page=page
+        admin_orders_page=page,
+        admin_orders_material_id=material_id if is_material_filter else None
     )
     
     start_num = page * orders_per_page + 1
     end_num = min((page + 1) * orders_per_page, total_count)
+
+    if is_material_filter:
+        back_callback = f"admin_orders_materials:{order_type}"
+        back_text = "⬅️ Назад к материалам"
+    else:
+        back_callback = f"admin_back_to_statuses:{order_type}"
+        back_text = "⬅️ Назад к разделу"
     
     orders_keyboard = keyboards.get_orders_list_keyboard(
         orders,
@@ -583,20 +714,37 @@ async def _show_orders_page(callback: CallbackQuery, state: FSMContext, order_ty
         current_page=page,
         total_pages=total_pages,
         order_type=order_type,
-        back_callback=f"admin_back_to_statuses:{order_type}",
-        back_text="⬅️ Назад к разделу"
+        back_callback=back_callback,
+        back_text=back_text
     )
-    orders_text = (
-        f"📋 {status_text} — {order_type_name}\n"
+    order_type_display = html.escape(order_type_name)
+    if is_material_filter and material_name is not None:
+        status_display = (
+            "🎨 <b>Материал выбран:</b>\n"
+            f"<b>{html.escape(material_name)}</b>"
+        )
+        header_line = f"📋 {order_type_display}"
+    else:
+        status_display = html.escape(status_text)
+        header_line = f"📋 {status_display} — {order_type_display}"
+
+    orders_text = f"{header_line}\n"
+    if is_material_filter and material_name is not None:
+        orders_text += f"{status_display}\n"
+
+    orders_text += (
         f"Заказы {start_num}-{end_num} из {total_count}\n"
         f"Страница {page + 1} из {total_pages}\n\n"
-        "Выберите заказ для просмотра:"
     )
+    if is_material_filter:
+        orders_text += "<i>Показываются только заказы в статусах «В ожидании» и «В работе».</i>\n\n"
+    orders_text += "Выберите заказ для просмотра:"
 
     try:
         await callback.message.edit_text(
             orders_text,
-            reply_markup=orders_keyboard
+            reply_markup=orders_keyboard,
+            parse_mode="HTML"
         )
     except TelegramBadRequest as exc:
         error_text = str(exc)
@@ -611,7 +759,8 @@ async def _show_orders_page(callback: CallbackQuery, state: FSMContext, order_ty
             await callback.bot.send_message(
                 callback.message.chat.id,
                 orders_text,
-                reply_markup=orders_keyboard
+                reply_markup=orders_keyboard,
+                parse_mode="HTML"
             )
             await callback.answer()
             return

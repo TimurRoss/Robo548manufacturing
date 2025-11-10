@@ -80,6 +80,11 @@ def get_admin_orders_keyboard(stats: dict, archived_count: int, order_type: str)
     """Клавиатура для выбора раздела заказов внутри конкретного типа"""
     builder = InlineKeyboardBuilder()
 
+    builder.add(InlineKeyboardButton(
+        text="🔍 По материалу",
+        callback_data=f"admin_orders_materials:{order_type}"
+    ))
+
     all_count = stats.get("all", 0)
     pending_count = stats.get("pending", 0)
     in_progress_count = stats.get("in_progress", 0)
@@ -107,7 +112,7 @@ def get_admin_orders_keyboard(stats: dict, archived_count: int, order_type: str)
     ))
     builder.add(InlineKeyboardButton(text="⬅️ К типам заказов", callback_data="admin_back_to_order_types"))
     builder.add(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back_to_main"))
-    builder.adjust(1, 2, 2, 1, 1)
+    builder.adjust(1, 1, 2, 2, 1, 1)
     return builder.as_markup()
 
 
@@ -316,6 +321,27 @@ def get_manage_materials_keyboard(material_type: str) -> InlineKeyboardMarkup:
     builder.add(InlineKeyboardButton(text="⬅️ К выбору типа", callback_data="admin_back_to_material_types"))
     builder.add(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back_to_main"))
     builder.adjust(1, 1, 1, 1)
+    return builder.as_markup()
+
+
+def get_admin_orders_materials_keyboard(materials: list, order_type: str) -> InlineKeyboardMarkup:
+    """Клавиатура выбора материала для фильтрации заказов"""
+    builder = InlineKeyboardBuilder()
+
+    for material in materials:
+        builder.add(InlineKeyboardButton(
+            text=material["name"],
+            callback_data=f"admin_orders_material:{order_type}:{material['id']}"
+        ))
+
+    back_button = InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin_back_to_statuses:{order_type}")
+    builder.add(back_button)
+
+    if materials:
+        builder.adjust(2, 1)
+    else:
+        builder.adjust(1, 1)
+
     return builder.as_markup()
 
 

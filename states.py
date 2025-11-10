@@ -30,3 +30,8 @@ class OrderRejectionStates(StatesGroup):
     """Состояния для отклонения заказа"""
     waiting_for_rejection_reason = State()
 
+
+class BroadcastStates(StatesGroup):
+    """Состояния для рассылки сообщений администраторами"""
+    waiting_for_message = State()
+

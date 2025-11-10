@@ -22,7 +22,8 @@ def get_admin_menu_keyboard() -> ReplyKeyboardMarkup:
     builder.add(KeyboardButton(text="Админ-панель"))
     builder.add(KeyboardButton(text="Создать заказ"))
     builder.add(KeyboardButton(text="Мои заказы"))
-    builder.adjust(2, 1)
+    builder.add(KeyboardButton(text="Рассылка"))
+    builder.adjust(2, 2)
     return builder.as_markup(resize_keyboard=True)
 
 
@@ -31,7 +32,24 @@ def get_admin_main_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.add(InlineKeyboardButton(text="📦 Заказы", callback_data="admin_orders_menu"))
     builder.add(InlineKeyboardButton(text="🔧 Управление материалами", callback_data="admin_manage_materials"))
-    builder.adjust(1, 1)
+    builder.add(InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast"))
+    builder.adjust(1, 1, 1)
+    return builder.as_markup()
+
+
+def get_admin_new_order_keyboard(order_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура уведомления о новом заказе"""
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(text="▶️ Раскрыть заказ", callback_data=f"admin_expand_order:{order_id}"))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def get_broadcast_cancel_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура для отмены или выхода из режима рассылки"""
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(text="❌ Отмена", callback_data="admin_broadcast_cancel"))
+    builder.adjust(1)
     return builder.as_markup()
 
 
@@ -171,7 +189,9 @@ def get_order_detail_keyboard(
     is_admin: bool = True,
     order_type: str | None = None,
     list_status: str | None = None,
-    current_page: int | None = None
+    current_page: int | None = None,
+    show_list_back: bool = True,
+    extra_buttons: list[tuple[str, str]] | None = None
 ) -> InlineKeyboardMarkup:
     """Клавиатура для детального просмотра заказа"""
     builder = InlineKeyboardBuilder()
@@ -181,49 +201,61 @@ def get_order_detail_keyboard(
 
     if current_status == "archived":
         if is_admin:
-            builder.add(InlineKeyboardButton(text="Скачать модель", callback_data=f"download_model:{order_id}"))
+            builder.row(InlineKeyboardButton(text="Скачать модель", callback_data=f"download_model:{order_id}"))
+            if show_list_back:
+                if order_type:
+                    builder.row(InlineKeyboardButton(
+                        text="⬅️ Назад к списку",
+                        callback_data=f"admin_back_to_orders:{order_type}:{back_status}:{page_token}"
+                    ))
+                else:
+                    builder.row(InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="admin_back_to_orders"))
+        else:
+            builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="user_back_to_orders"))
+
+        if extra_buttons:
+            for text, callback in extra_buttons:
+                builder.row(InlineKeyboardButton(text=text, callback_data=callback))
+        return builder.as_markup()
+
+    if is_admin:
+        builder.row(InlineKeyboardButton(text="Скачать модель", callback_data=f"download_model:{order_id}"))
+
+        if current_status == "pending":
+            reject_callback = f"reject_order:{order_id}"
+            if order_type and show_list_back:
+                reject_callback = f"reject_order:{order_id}:{order_type}:{back_status}:{page_token}"
+            builder.row(
+                InlineKeyboardButton(text="Принять в работу", callback_data=f"set_status:{order_id}:in_progress"),
+                InlineKeyboardButton(text="Отклонить", callback_data=reject_callback)
+            )
+        elif current_status == "in_progress":
+            builder.row(
+                InlineKeyboardButton(text="Готов", callback_data=f"set_status:{order_id}:ready"),
+                InlineKeyboardButton(text="В ожидании", callback_data=f"set_status:{order_id}:pending")
+            )
+        elif current_status == "ready":
+            builder.row(
+                InlineKeyboardButton(text="В работу", callback_data=f"set_status:{order_id}:in_progress"),
+                InlineKeyboardButton(text="✅ Забрал", callback_data=f"admin_picked_up:{order_id}")
+            )
+
+        if show_list_back:
             if order_type:
-                builder.add(InlineKeyboardButton(
+                builder.row(InlineKeyboardButton(
                     text="⬅️ Назад к списку",
                     callback_data=f"admin_back_to_orders:{order_type}:{back_status}:{page_token}"
                 ))
             else:
-                builder.add(InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="admin_back_to_orders"))
-            builder.adjust(1, 1)
-        else:
-            builder.add(InlineKeyboardButton(text="⬅️ Назад", callback_data="user_back_to_orders"))
-            builder.adjust(1)
-        return builder.as_markup()
-
-    if is_admin:
-        builder.add(InlineKeyboardButton(text="Скачать модель", callback_data=f"download_model:{order_id}"))
-
-        if current_status == "pending":
-            builder.add(InlineKeyboardButton(text="Принять в работу", callback_data=f"set_status:{order_id}:in_progress"))
-            reject_callback = f"reject_order:{order_id}"
-            if order_type:
-                reject_callback = f"reject_order:{order_id}:{order_type}:{back_status}:{page_token}"
-            builder.add(InlineKeyboardButton(text="Отклонить", callback_data=reject_callback))
-        elif current_status == "in_progress":
-            builder.add(InlineKeyboardButton(text="Готов", callback_data=f"set_status:{order_id}:ready"))
-            builder.add(InlineKeyboardButton(text="В ожидании", callback_data=f"set_status:{order_id}:pending"))
-        elif current_status == "ready":
-            builder.add(InlineKeyboardButton(text="В работу", callback_data=f"set_status:{order_id}:in_progress"))
-            builder.add(InlineKeyboardButton(text="✅ Забрал", callback_data=f"admin_picked_up:{order_id}"))
-
-        if order_type:
-            builder.add(InlineKeyboardButton(
-                text="⬅️ Назад к списку",
-                callback_data=f"admin_back_to_orders:{order_type}:{back_status}:{page_token}"
-            ))
-        else:
-            builder.add(InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="admin_back_to_orders"))
-        builder.adjust(1, 2, 1)
+                builder.row(InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="admin_back_to_orders"))
     else:
         if current_status == "ready":
-            builder.add(InlineKeyboardButton(text="✅ Забрал", callback_data=f"user_picked_up:{order_id}"))
-        builder.add(InlineKeyboardButton(text="⬅️ Назад", callback_data="user_back_to_orders"))
-        builder.adjust(1, 1)
+            builder.row(InlineKeyboardButton(text="✅ Забрал", callback_data=f"user_picked_up:{order_id}"))
+        builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="user_back_to_orders"))
+
+    if extra_buttons:
+        for text, callback in extra_buttons:
+            builder.row(InlineKeyboardButton(text=text, callback_data=callback))
 
     return builder.as_markup()
 

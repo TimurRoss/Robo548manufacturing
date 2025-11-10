@@ -1,9 +1,12 @@
 """
 Обработчики для администраторов
 """
+import asyncio
+import html
+
 from aiogram import Router, F, Bot
-from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import Message, CallbackQuery, FSInputFile
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
+from aiogram.types import Message, CallbackQuery, FSInputFile, InlineKeyboardMarkup
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
 from pathlib import Path
@@ -22,6 +25,104 @@ router = Router()
 def is_admin(user_id: int) -> bool:
     """Проверка, является ли пользователь администратором"""
     return user_id in config.ADMIN_IDS
+
+
+def _build_admin_new_order_summary(order: dict) -> str:
+    """Краткое описание заказа для уведомления"""
+    order_type_code = order.get('order_type', '3d_print')
+    order_type_name = config.ORDER_TYPES.get(order_type_code, order_type_code)
+    material_name = order.get('material_name') or "Не указан"
+    first_name = (order.get('first_name') or "").strip()
+    last_name = (order.get('last_name') or "").strip()
+    full_name = f"{first_name} {last_name}".strip() or "Не указан"
+    username = order.get('username')
+    if username:
+        customer = f"{full_name} (@{username})"
+    else:
+        customer = full_name
+
+    summary = (
+        f"🆕 Заказ №{order['id']}\n\n"
+        f"⚙️ Тип: {order_type_name}\n"
+        f"📦 Деталь: {order.get('part_name', '—')}\n"
+        f"🧪 Материал: {material_name}\n"
+        f"👤 Клиент: {customer} (ID: {order.get('user_id')})\n"
+    )
+
+    comment = order.get('comment')
+    if comment:
+        summary += f"💬 Комментарий: {comment}\n"
+
+    summary += "\nНажмите «Раскрыть заказ», чтобы посмотреть подробности."
+    return summary
+
+
+def _build_admin_order_detail_payload(
+    order: dict,
+    *,
+    order_type: str | None = None,
+    list_status: str | None = None,
+    current_page: int | None = None,
+    show_list_back: bool = True,
+    extra_buttons: list[tuple[str, str]] | None = None
+) -> tuple[str, InlineKeyboardMarkup, str | None, str]:
+    """Подготовить подробное описание заказа и клавиатуру"""
+    status_code = order.get('status_code', 'unknown')
+    status_name = order.get('status_name', 'Неизвестно')
+    material_name = order.get('material_name') or "Не указан"
+    order_type_code = order.get('order_type', order_type or '3d_print')
+    order_type_name = config.ORDER_TYPES.get(order_type_code, order_type_code)
+
+    full_name = f"{order.get('first_name', '')} {order.get('last_name', '')}".strip()
+    full_name_html = html.escape(full_name) if full_name else "—"
+    username_value = order.get('username')
+    if username_value:
+        user_line = f"{full_name_html} (@{html.escape(username_value)})"
+    else:
+        user_line = full_name_html
+    user_info = f"{user_line}\n🆔 Telegram ID: {order['user_id']}"
+
+    detail_text = (
+        f"📋 Заказ №{order['id']}\n\n"
+        f"📅 Дата создания: {html.escape(order.get('created_at', '—'))}\n"
+        f"👤 Заказчик: {user_info}\n"
+        f"⚙️ Тип: {html.escape(order_type_name)}\n"
+        f"📦 Название детали: {html.escape(order.get('part_name', '—'))}\n"
+        f"📊 Статус: {html.escape(status_name)}\n"
+    )
+
+    if order.get('photo_caption'):
+        detail_text += f"📝 Подпись к фото: {html.escape(order['photo_caption'])}\n"
+
+    material_display = material_name or "Не указан"
+    detail_text += (
+        "\n"
+        f"<b>Материал:</b>\n{html.escape(material_display)}"
+    )
+
+    if order.get('comment'):
+        detail_text += f"\n\n<b>Комментарий:</b>\n{html.escape(order['comment'])}"
+
+    if order.get('rejection_reason'):
+        detail_text += f"\n\n❌ Причина отклонения: {html.escape(order['rejection_reason'])}\n"
+
+    back_order_type = order_type if show_list_back else None
+    if show_list_back and back_order_type is None:
+        back_order_type = order_type_code
+
+    keyboard = keyboards.get_order_detail_keyboard(
+        order['id'],
+        status_code,
+        is_admin=True,
+        order_type=back_order_type,
+        list_status=list_status,
+        current_page=current_page,
+        show_list_back=show_list_back,
+        extra_buttons=extra_buttons
+    )
+
+    photo_path = order.get('photo_path')
+    return detail_text, keyboard, photo_path, status_name
 
 
 @router.callback_query(F.data.startswith("admin_materials_back:"))
@@ -223,6 +324,141 @@ async def cmd_admin(message: Message):
     )
 
 
+@router.message(F.text == "Рассылка")
+async def start_broadcast_from_menu(message: Message, state: FSMContext):
+    """Запуск режима рассылки из главного меню"""
+    if not is_admin(message.from_user.id):
+        await message.answer("У вас нет доступа к режиму рассылки.")
+        return
+
+    prompt_message = await message.answer(
+        "📢 Режим рассылки\n\n"
+        "Отправьте сообщение, которое нужно разослать всем пользователям.\n"
+        "Можно отправить текст, фото, документ или другое сообщение — мы отправим точную копию.\n\n"
+        "Чтобы отменить рассылку, используйте кнопки ниже.",
+        reply_markup=keyboards.get_broadcast_cancel_keyboard()
+    )
+
+    await state.set_state(states.BroadcastStates.waiting_for_message)
+    await state.update_data(
+        broadcast_prompt_chat_id=prompt_message.chat.id,
+        broadcast_prompt_message_id=prompt_message.message_id
+    )
+
+
+@router.callback_query(F.data == "admin_broadcast")
+async def start_broadcast(callback: CallbackQuery, state: FSMContext):
+    """Запустить режим рассылки сообщений"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+
+    await state.set_state(states.BroadcastStates.waiting_for_message)
+    await state.update_data(
+        broadcast_prompt_chat_id=callback.message.chat.id,
+        broadcast_prompt_message_id=callback.message.message_id
+    )
+
+    await callback.message.edit_text(
+        "📢 Режим рассылки\n\n"
+        "Отправьте сообщение, которое нужно разослать всем пользователям.\n"
+        "Можно отправить текст, фото, документ или другое сообщение — мы отправим точную копию.\n\n"
+        "Чтобы отменить рассылку, используйте кнопки ниже.",
+        reply_markup=keyboards.get_broadcast_cancel_keyboard()
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_broadcast_cancel")
+async def cancel_broadcast(callback: CallbackQuery, state: FSMContext):
+    """Отменить режим рассылки"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+
+    await state.set_state(None)
+    await state.update_data(broadcast_prompt_chat_id=None, broadcast_prompt_message_id=None)
+
+    await callback.message.edit_text(
+        "🔧 Панель администратора\n\n"
+        "Выберите раздел:",
+        reply_markup=keyboards.get_admin_main_keyboard()
+    )
+    await callback.answer("Рассылка отменена.")
+
+
+@router.message(states.BroadcastStates.waiting_for_message)
+async def process_broadcast_message(message: Message, state: FSMContext):
+    """Отправить сообщение рассылки всем пользователям"""
+    if not is_admin(message.from_user.id):
+        await message.answer("У вас нет доступа к режиму рассылки.")
+        await state.set_state(None)
+        return
+
+    user_ids = await database.db.get_all_user_ids()
+    unique_user_ids = sorted({int(user_id) for user_id in user_ids if isinstance(user_id, int)})
+
+    # Исключаем отправителя, он уже видит своё сообщение
+    if message.from_user.id in unique_user_ids:
+        unique_user_ids.remove(message.from_user.id)
+
+    total_recipients = len(unique_user_ids)
+
+    sent_count = 0
+    failed_count = 0
+
+    for user_id in unique_user_ids:
+        try:
+            await message.copy_to(user_id)
+            sent_count += 1
+        except TelegramRetryAfter as exc:
+            await asyncio.sleep(exc.retry_after)
+            try:
+                await message.copy_to(user_id)
+                sent_count += 1
+            except TelegramForbiddenError:
+                failed_count += 1
+                logger.info(f"Пользователь {user_id} запретил сообщения от бота, пропускаем.")
+            except TelegramBadRequest as inner_exc:
+                failed_count += 1
+                logger.warning(f"Не удалось отправить сообщение пользователю {user_id}: {inner_exc}")
+            except Exception as inner_exc:
+                failed_count += 1
+                logger.error(f"Ошибка при повторной отправке пользователю {user_id}: {inner_exc}")
+        except TelegramForbiddenError:
+            failed_count += 1
+            logger.info(f"Пользователь {user_id} запретил сообщения от бота, пропускаем.")
+        except TelegramBadRequest as exc:
+            failed_count += 1
+            logger.warning(f"Не удалось отправить сообщение пользователю {user_id}: {exc}")
+        except Exception as exc:
+            failed_count += 1
+            logger.error(f"Не удалось отправить сообщение пользователю {user_id}: {exc}")
+
+        # Небольшая пауза для снижения риска Flood control
+        await asyncio.sleep(0.05)
+
+    summary_text = (
+        "📢 Рассылка завершена\n\n"
+        f"Всего получателей: {total_recipients}\n"
+        f"Успешно отправлено: {sent_count}\n"
+        f"С ошибками: {failed_count}\n\n"
+        "Выберите дальнейшее действие:"
+    )
+
+    await message.answer(
+        summary_text,
+        reply_markup=keyboards.get_admin_main_keyboard()
+    )
+
+    logger.info(
+        f"Администратор {message.from_user.id} отправил рассылку. "
+        f"Получателей: {total_recipients}, успешно: {sent_count}, ошибки: {failed_count}"
+    )
+
+    await state.update_data(broadcast_prompt_chat_id=None, broadcast_prompt_message_id=None)
+    await state.set_state(None)
+
 @router.callback_query(F.data == "admin_orders_menu")
 async def show_orders_menu(callback: CallbackQuery, state: FSMContext):
     """Показать меню фильтров заказов"""
@@ -340,26 +576,44 @@ async def _show_orders_page(callback: CallbackQuery, state: FSMContext, order_ty
     start_num = page * orders_per_page + 1
     end_num = min((page + 1) * orders_per_page, total_count)
     
+    orders_keyboard = keyboards.get_orders_list_keyboard(
+        orders,
+        prefix="admin_order",
+        status_code=status_code,
+        current_page=page,
+        total_pages=total_pages,
+        order_type=order_type,
+        back_callback=f"admin_back_to_statuses:{order_type}",
+        back_text="⬅️ Назад к разделу"
+    )
+    orders_text = (
+        f"📋 {status_text} — {order_type_name}\n"
+        f"Заказы {start_num}-{end_num} из {total_count}\n"
+        f"Страница {page + 1} из {total_pages}\n\n"
+        "Выберите заказ для просмотра:"
+    )
+
     try:
         await callback.message.edit_text(
-            f"📋 {status_text} — {order_type_name}\n"
-            f"Заказы {start_num}-{end_num} из {total_count}\n"
-            f"Страница {page + 1} из {total_pages}\n\n"
-            "Выберите заказ для просмотра:",
-            reply_markup=keyboards.get_orders_list_keyboard(
-                orders,
-                prefix="admin_order",
-                status_code=status_code,
-                current_page=page,
-                total_pages=total_pages,
-                order_type=order_type,
-                back_callback=f"admin_back_to_statuses:{order_type}",
-                back_text="⬅️ Назад к разделу"
-            )
+            orders_text,
+            reply_markup=orders_keyboard
         )
     except TelegramBadRequest as exc:
-        if "message is not modified" in str(exc):
+        error_text = str(exc)
+        if "message is not modified" in error_text:
             await callback.answer("Эта страница уже открыта.")
+            return
+        if "no text in the message to edit" in error_text or "there is no text in the message to edit" in error_text:
+            try:
+                await callback.message.delete()
+            except TelegramBadRequest:
+                pass
+            await callback.bot.send_message(
+                callback.message.chat.id,
+                orders_text,
+                reply_markup=orders_keyboard
+            )
+            await callback.answer()
             return
         raise
 
@@ -411,12 +665,15 @@ async def back_to_orders_list(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data == "admin_back_to_main")
-async def back_to_admin_main(callback: CallbackQuery):
+async def back_to_admin_main(callback: CallbackQuery, state: FSMContext):
     """Вернуться в главное меню админ-панели"""
     if not is_admin(callback.from_user.id):
         await callback.answer("У вас нет доступа", show_alert=True)
         return
     
+    await state.set_state(None)
+    await state.update_data(broadcast_prompt_chat_id=None, broadcast_prompt_message_id=None)
+
     await callback.message.edit_text(
         "🔧 Панель администратора\n\n"
         "Выберите раздел:",
@@ -465,92 +722,144 @@ async def show_order_detail(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Заказ не найден", show_alert=True)
         return
     
-    status_code = order.get('status_code', 'unknown')
-    status_name = order.get('status_name', 'Неизвестно')
-    material_name = order.get('material_name', 'Не указан')
-    order_type_code = order.get('order_type', order_type)
-    order_type_name = config.ORDER_TYPES.get(order_type_code, order_type_code)
-    
-    # Формируем информацию о пользователе
-    user_info = f"{order['first_name']} {order['last_name']}"
-    if order.get('username'):
-        user_info += f" (@{order['username']})"
-    user_info += f"\n🆔 Telegram ID: {order['user_id']}"
-    
-    # Формируем текст с информацией о заказе
-    order_text = (
-        f"📋 Заказ №{order['id']}\n\n"
-        f"📅 Дата создания: {order['created_at']}\n"
-        f"👤 Заказчик: {user_info}\n"
-        f"⚙️ Тип: {order_type_name}\n"
-        f"📦 Название детали: {order['part_name']}\n"
-        f"🧪 Материал: {material_name}\n"
-        f"📊 Статус: {status_name}\n"
+    detail_text, detail_keyboard, photo_path, _ = _build_admin_order_detail_payload(
+        order,
+        order_type=order_type,
+        list_status=list_status,
+        current_page=current_page,
+        show_list_back=True
     )
-    
-    if order.get('photo_caption'):
-        order_text += f"📝 Подпись к фото: {order['photo_caption']}\n"
-    
-    if order.get('comment'):
-        order_text += f"💬 Комментарий к заказу: {order['comment']}\n"
-    
-    if order.get('rejection_reason'):
-        order_text += f"\n❌ Причина отклонения: {order['rejection_reason']}\n"
-    
-    # Отправляем фото, если есть, иначе редактируем текст
-    if order.get('photo_path') and Path(order['photo_path']).exists():
+
+    if photo_path and Path(photo_path).exists():
         try:
-            photo_file = FSInputFile(order['photo_path'])
-            await callback.message.delete()  # Удаляем старое сообщение
+            photo_file = FSInputFile(photo_path)
+            await callback.message.delete()
             await callback.bot.send_photo(
                 callback.message.chat.id,
                 photo_file,
-                caption=order_text
-            )
-            # Отправляем клавиатуру отдельным сообщением
-            await callback.bot.send_message(
-                callback.message.chat.id,
-                "Выберите действие:",
-                reply_markup=keyboards.get_order_detail_keyboard(
-                    order_id,
-                    status_code,
-                    is_admin=True,
-                    order_type=order_type,
-                    list_status=list_status,
-                    current_page=current_page
-                )
+                caption=detail_text,
+                reply_markup=detail_keyboard,
+                parse_mode="HTML"
             )
         except Exception as e:
             logger.error(f"Ошибка при отправке фото: {e}")
-            await callback.message.edit_text(order_text)
-            # Отправляем клавиатуру отдельным сообщением
-            await callback.bot.send_message(
-                callback.message.chat.id,
-                "Выберите действие:",
-                reply_markup=keyboards.get_order_detail_keyboard(
-                    order_id,
-                    status_code,
-                    is_admin=True,
-                    order_type=order_type,
-                    list_status=list_status,
-                    current_page=current_page
-                )
+            await callback.message.edit_text(
+                detail_text,
+                reply_markup=detail_keyboard,
+                parse_mode="HTML"
             )
     else:
-        await callback.message.edit_text(order_text)
-        # Отправляем клавиатуру отдельным сообщением
-        await callback.bot.send_message(
-            callback.message.chat.id,
-            "Выберите действие:",
-            reply_markup=keyboards.get_order_detail_keyboard(
-                order_id,
-                status_code,
-                is_admin=True,
-                order_type=order_type,
-                list_status=list_status,
-                current_page=current_page
-            )
+        await callback.message.edit_text(
+            detail_text,
+            reply_markup=detail_keyboard,
+            parse_mode="HTML"
         )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_expand_order:"))
+async def expand_order_from_notification(callback: CallbackQuery, state: FSMContext):
+    """Развернуть уведомление о новом заказе"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+
+    try:
+        _, order_id_str = callback.data.split(":")
+        order_id = int(order_id_str)
+    except (ValueError, IndexError):
+        await callback.answer("Некорректные данные", show_alert=True)
+        return
+
+    order = await database.db.get_order(order_id)
+    if not order:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+
+    await state.update_data(
+        admin_order_type=order.get('order_type', '3d_print'),
+        admin_order_status=order.get('status_code'),
+        admin_orders_page=0
+    )
+
+    collapse_button = [("⬅️ Скрыть уведомление", f"admin_collapse_order:{order_id}")]
+    detail_text, detail_keyboard, photo_path, _ = _build_admin_order_detail_payload(
+        order,
+        order_type=order.get('order_type'),
+        list_status=order.get('status_code'),
+        current_page=0,
+        show_list_back=False,
+        extra_buttons=collapse_button
+    )
+
+    if photo_path and Path(photo_path).exists():
+        try:
+            photo_file = FSInputFile(photo_path)
+            await callback.message.delete()
+            await callback.bot.send_photo(
+                callback.message.chat.id,
+                photo_file,
+                caption=detail_text,
+                reply_markup=detail_keyboard,
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при отправке фото (разворот уведомления): {e}")
+            await callback.message.edit_text(
+                detail_text,
+                reply_markup=detail_keyboard,
+                parse_mode="HTML"
+            )
+    else:
+        await callback.message.edit_text(
+            detail_text,
+            reply_markup=detail_keyboard,
+            parse_mode="HTML"
+        )
+
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_collapse_order:"))
+async def collapse_order_notification(callback: CallbackQuery, state: FSMContext):
+    """Свернуть уведомление с подробностями заказа"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+
+    try:
+        _, order_id_str = callback.data.split(":")
+        order_id = int(order_id_str)
+    except (ValueError, IndexError):
+        await callback.answer("Некорректные данные", show_alert=True)
+        return
+
+    order = await database.db.get_order(order_id)
+    if not order:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+
+    summary_text = _build_admin_new_order_summary(order)
+
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest as exc:
+        logger.warning(f"Не удалось удалить сообщение уведомления: {exc}")
+    except Exception as exc:
+        logger.error(f"Ошибка при удалении сообщения уведомления: {exc}")
+
+    await callback.bot.send_message(
+        callback.message.chat.id,
+        summary_text,
+        reply_markup=keyboards.get_admin_new_order_keyboard(order_id)
+    )
+
+    await state.update_data(
+        admin_order_type=order.get('order_type', '3d_print'),
+        admin_order_status=order.get('status_code'),
+        admin_orders_page=0
+    )
+
     await callback.answer()
 
 
@@ -843,54 +1152,44 @@ async def show_order_detail_after_update(
     if not order:
         return
     
-    status_code = order.get('status_code', 'unknown')
-    status_name = order.get('status_name', 'Неизвестно')
-    material_name = order.get('material_name', 'Не указан')
-    order_type_code = order.get('order_type', order_type or '3d_print')
-    order_type_name = config.ORDER_TYPES.get(order_type_code, order_type_code)
-    
-    # Формируем информацию о пользователе
-    user_info = f"{order['first_name']} {order['last_name']}"
-    if order.get('username'):
-        user_info += f" (@{order['username']})"
-    user_info += f"\n🆔 Telegram ID: {order['user_id']}"
-    
-    order_text = (
-        f"📋 Заказ №{order['id']}\n\n"
-        f"📅 Дата создания: {order['created_at']}\n"
-        f"👤 Заказчик: {user_info}\n"
-        f"⚙️ Тип: {order_type_name}\n"
-        f"📦 Название детали: {order['part_name']}\n"
-        f"🧪 Материал: {material_name}\n"
-        f"📊 Статус: {status_name}\n"
+    detail_text, detail_keyboard, photo_path, status_name = _build_admin_order_detail_payload(
+        order,
+        order_type=order_type,
+        list_status=list_status,
+        current_page=current_page,
+        show_list_back=True
     )
-    
-    if order.get('photo_caption'):
-        order_text += f"📝 Подпись к фото: {order['photo_caption']}\n"
-    
-    if order.get('comment'):
-        order_text += f"💬 Комментарий к заказу: {order['comment']}\n"
-    
-    if order.get('rejection_reason'):
-        order_text += f"\n❌ Причина отклонения: {order['rejection_reason']}\n"
-    
-    # Отправляем обновленное сообщение
-    await bot.send_message(
-        chat_id,
-        f"✅ Статус изменен на '{status_name}'\n\n{order_text}"
+
+    status_message = (
+        f"✅ Статус изменен на '{html.escape(status_name)}'\n\n"
+        f"{detail_text}"
     )
-    await bot.send_message(
-        chat_id,
-        "Выберите действие:",
-            reply_markup=keyboards.get_order_detail_keyboard(
-                order_id,
-                status_code,
-                is_admin=True,
-                order_type=order_type_code,
-                list_status=list_status,
-                current_page=current_page
+
+    if photo_path and Path(photo_path).exists():
+        try:
+            photo_file = FSInputFile(photo_path)
+            await bot.send_photo(
+                chat_id,
+                photo_file,
+                caption=status_message,
+                reply_markup=detail_keyboard,
+                parse_mode="HTML"
             )
-    )
+        except Exception as e:
+            logger.error(f"Ошибка при отправке фото (обновление заказа): {e}")
+            await bot.send_message(
+                chat_id,
+                status_message,
+                reply_markup=detail_keyboard,
+                parse_mode="HTML"
+            )
+    else:
+        await bot.send_message(
+            chat_id,
+            status_message,
+            reply_markup=detail_keyboard,
+            parse_mode="HTML"
+        )
 
 
 @router.callback_query(F.data == "admin_manage_materials")

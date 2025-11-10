@@ -4,7 +4,7 @@
 import aiosqlite
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, Sequence
 from loguru import logger
 import config
 
@@ -534,6 +534,86 @@ class Database:
                     query += " AND o.order_type = ?"
                     params = (order_type,)
                 cursor = await db.execute(query, params)
+            result = await cursor.fetchone()
+            return result[0] if result else 0
+
+    async def get_orders_by_material(
+        self,
+        material_id: int,
+        statuses: Optional[Sequence[str]] = None,
+        order_type: Optional[str] = None,
+        limit: int | None = None,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """Получить заказы по материалу с опциональным фильтром по статусам"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+
+            base_query = """
+                SELECT o.*,
+                       u.first_name, u.last_name, u.user_id, u.username,
+                       s.code as status_code, s.name as status_name,
+                       m.name as material_name
+                FROM orders o
+                JOIN users u ON o.user_id = u.user_id
+                JOIN statuses s ON o.status_id = s.id
+                LEFT JOIN materials m ON o.material_id = m.id
+                WHERE o.material_id = ?
+            """
+
+            params: List[Any] = [material_id]
+
+            if statuses:
+                placeholders = ",".join("?" for _ in statuses)
+                base_query += f" AND s.code IN ({placeholders})"
+                params.extend(statuses)
+            else:
+                base_query += " AND s.code != 'archived' AND s.code != 'rejected'"
+
+            if order_type:
+                base_query += " AND o.order_type = ?"
+                params.append(order_type)
+
+            if statuses and all(status in {"pending", "in_progress"} for status in statuses):
+                base_query += "\n                ORDER BY o.created_at ASC"
+            else:
+                base_query += "\n                ORDER BY o.created_at DESC"
+
+            if limit is not None:
+                base_query += f" LIMIT {int(limit)} OFFSET {int(offset)}"
+
+            cursor = await db.execute(base_query, tuple(params))
+            rows = await cursor.fetchall()
+            return self._order_rows_to_list(rows)
+
+    async def count_orders_by_material(
+        self,
+        material_id: int,
+        statuses: Optional[Sequence[str]] = None,
+        order_type: Optional[str] = None
+    ) -> int:
+        """Получить количество заказов по материалу"""
+        async with aiosqlite.connect(self.db_path) as db:
+            base_query = """
+                SELECT COUNT(*) 
+                FROM orders o
+                JOIN statuses s ON o.status_id = s.id
+                WHERE o.material_id = ?
+            """
+            params: List[Any] = [material_id]
+
+            if statuses:
+                placeholders = ",".join("?" for _ in statuses)
+                base_query += f" AND s.code IN ({placeholders})"
+                params.extend(statuses)
+            else:
+                base_query += " AND s.code != 'archived' AND s.code != 'rejected'"
+
+            if order_type:
+                base_query += " AND o.order_type = ?"
+                params.append(order_type)
+
+            cursor = await db.execute(base_query, tuple(params))
             result = await cursor.fetchone()
             return result[0] if result else 0
 

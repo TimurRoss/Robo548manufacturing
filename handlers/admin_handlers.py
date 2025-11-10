@@ -956,10 +956,30 @@ async def reject_order_start(callback: CallbackQuery, state: FSMContext):
         reject_list_page=list_page
     )
     
-    await callback.message.edit_text(
+    reject_prompt = (
         "❌ Отклонение заказа\n\n"
         "Пожалуйста, укажите причину отклонения заказа:"
     )
+
+    try:
+        await callback.message.edit_text(reject_prompt)
+    except TelegramBadRequest as exc:
+        error_text = str(exc)
+        if "no text in the message to edit" in error_text or "there is no text in the message to edit" in error_text:
+            try:
+                await callback.message.delete()
+            except TelegramBadRequest:
+                pass
+            await callback.bot.send_message(
+                callback.message.chat.id,
+                reject_prompt
+            )
+        elif "message is not modified" in error_text:
+            # Игнорируем попытку изменить на тот же текст
+            pass
+        else:
+            raise
+
     await state.set_state(states.OrderRejectionStates.waiting_for_rejection_reason)
     await callback.answer()
 

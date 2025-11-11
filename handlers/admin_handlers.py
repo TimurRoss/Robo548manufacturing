@@ -1192,7 +1192,7 @@ async def reject_order_start(callback: CallbackQuery, state: FSMContext):
     )
     
     reject_prompt = (
-        "❌ Отклонение заказа\n\n"
+        f"❌ Отклонение заказа №{order_id}\n\n"
         "Пожалуйста, укажите причину отклонения заказа:"
     )
 

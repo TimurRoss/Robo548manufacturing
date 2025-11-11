@@ -73,8 +73,9 @@ def get_admin_order_types_keyboard(order_stats: dict, archived_counts: dict) -> 
         total = orders_total + archived_total
         button_text = f"{title} ({total} шт)" if total > 0 else title
         builder.add(InlineKeyboardButton(text=button_text, callback_data=f"admin_orders_type:{order_type}"))
+    builder.add(InlineKeyboardButton(text="🔍 Найти заказ", callback_data="admin_find_order"))
     builder.add(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back_to_main"))
-    builder.adjust(1, 1, 1)
+    builder.adjust(1, 1, 1, 1)
     return builder.as_markup()
 
 

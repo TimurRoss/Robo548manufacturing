@@ -348,11 +348,34 @@ async def cmd_admin(message: Message):
         await message.answer("У вас нет доступа к админ-панели.")
         return
     
+    orders_enabled = await database.db.is_orders_enabled()
     await message.answer(
         "🔧 Панель администратора\n\n"
         "Выберите раздел:",
-        reply_markup=keyboards.get_admin_main_keyboard()
+        reply_markup=keyboards.get_admin_main_keyboard(orders_enabled)
     )
+
+
+@router.callback_query(F.data == "admin_toggle_orders")
+async def toggle_orders_acceptance(callback: CallbackQuery):
+    """Переключение доступности приёма заказов"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+
+    current_state = await database.db.is_orders_enabled()
+    new_state = not current_state
+    await database.db.set_orders_enabled(new_state)
+
+    status_text = "открыт" if new_state else "закрыт"
+    orders_enabled = new_state
+
+    await callback.message.edit_text(
+        "🔧 Панель администратора\n\n"
+        "Выберите раздел:",
+        reply_markup=keyboards.get_admin_main_keyboard(orders_enabled)
+    )
+    await callback.answer(f"Приём заказов {status_text}.")
 
 
 @router.message(F.text == "Рассылка")
@@ -410,10 +433,11 @@ async def cancel_broadcast(callback: CallbackQuery, state: FSMContext):
     await state.set_state(None)
     await state.update_data(broadcast_prompt_chat_id=None, broadcast_prompt_message_id=None)
 
+    orders_enabled = await database.db.is_orders_enabled()
     await callback.message.edit_text(
         "🔧 Панель администратора\n\n"
         "Выберите раздел:",
-        reply_markup=keyboards.get_admin_main_keyboard()
+        reply_markup=keyboards.get_admin_main_keyboard(orders_enabled)
     )
     await callback.answer("Рассылка отменена.")
 
@@ -477,9 +501,10 @@ async def process_broadcast_message(message: Message, state: FSMContext):
         "Выберите дальнейшее действие:"
     )
 
+    orders_enabled = await database.db.is_orders_enabled()
     await message.answer(
         summary_text,
-        reply_markup=keyboards.get_admin_main_keyboard()
+        reply_markup=keyboards.get_admin_main_keyboard(orders_enabled)
     )
 
     logger.info(
@@ -825,10 +850,11 @@ async def back_to_admin_main(callback: CallbackQuery, state: FSMContext):
     await state.set_state(None)
     await state.update_data(broadcast_prompt_chat_id=None, broadcast_prompt_message_id=None)
 
+    orders_enabled = await database.db.is_orders_enabled()
     await callback.message.edit_text(
         "🔧 Панель администратора\n\n"
         "Выберите раздел:",
-        reply_markup=keyboards.get_admin_main_keyboard()
+        reply_markup=keyboards.get_admin_main_keyboard(orders_enabled)
     )
     await callback.answer()
 

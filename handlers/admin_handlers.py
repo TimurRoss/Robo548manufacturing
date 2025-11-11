@@ -1774,3 +1774,68 @@ async def admin_process_order_search(message: Message, state: FSMContext):
         )
 
 
+@router.callback_query(F.data.startswith("admin_view_from_user:"))
+async def admin_view_order_from_user(callback: CallbackQuery, state: FSMContext):
+    """Показать админское описание заказа из пользовательского списка"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+
+    try:
+        order_id = int(callback.data.split(":")[1])
+    except (ValueError, IndexError):
+        await callback.answer("Некорректный идентификатор заказа", show_alert=True)
+        return
+
+    order = await database.db.get_order(order_id)
+    if not order or order.get('user_id') != callback.from_user.id:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+
+    order_type = order.get('order_type', '3d_print')
+    status_code = order.get('status_code')
+
+    await state.update_data(
+        admin_order_type=order_type,
+        admin_order_status=status_code,
+        admin_orders_page=0
+    )
+
+    extra_buttons = [("⬅️ К моим заказам", "user_back_to_orders")]
+    detail_text, detail_keyboard, photo_path, _ = _build_admin_order_detail_payload(
+        order,
+        order_type=order_type,
+        list_status=status_code,
+        current_page=0,
+        show_list_back=False,
+        extra_buttons=extra_buttons
+    )
+
+    if photo_path and Path(photo_path).exists():
+        try:
+            photo_file = FSInputFile(photo_path)
+            await callback.message.delete()
+            await callback.bot.send_photo(
+                callback.message.chat.id,
+                photo_file,
+                caption=detail_text,
+                reply_markup=detail_keyboard,
+                parse_mode="HTML"
+            )
+        except Exception as exc:
+            logger.error(f"Ошибка при отправке фото (админ просмотр из пользовательского списка): {exc}")
+            await callback.message.edit_text(
+                detail_text,
+                reply_markup=detail_keyboard,
+                parse_mode="HTML"
+            )
+    else:
+        await callback.message.edit_text(
+            detail_text,
+            reply_markup=detail_keyboard,
+            parse_mode="HTML"
+        )
+
+    await callback.answer()
+
+

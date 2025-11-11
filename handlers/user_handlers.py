@@ -4,6 +4,7 @@
 import html
 
 from aiogram import Router, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
@@ -529,6 +530,10 @@ async def show_user_order_detail(callback: CallbackQuery):
         await callback.answer("Заказ не найден", show_alert=True)
         return
     
+    extra_buttons: list[tuple[str, str]] | None = None
+    if callback.from_user.id in config.ADMIN_IDS:
+        extra_buttons = [("🔧 Открыть админские действия", f"admin_view_from_user:{order_id}")]
+
     status_name = order.get('status_name', 'Неизвестно')
     material_name = order.get('material_name', 'Не указан')
     status_code = order.get('status_code', 'unknown')
@@ -550,7 +555,12 @@ async def show_user_order_detail(callback: CallbackQuery):
     
     await callback.message.edit_text(
         order_text,
-        reply_markup=keyboards.get_order_detail_keyboard(order_id, status_code, is_admin=False),
+        reply_markup=keyboards.get_order_detail_keyboard(
+            order_id,
+            status_code,
+            is_admin=False,
+            extra_buttons=extra_buttons
+        ),
         parse_mode="HTML"
     )
     await callback.answer()
@@ -597,10 +607,30 @@ async def user_back_to_orders(callback: CallbackQuery):
         await callback.answer()
         return
     
-    await callback.message.edit_text(
+    text = (
         "Ваши заказы:\n\n"
-        "Выберите заказ для просмотра:",
-        reply_markup=keyboards.get_orders_list_keyboard(orders, prefix="my_order")
+        "Выберите заказ для просмотра:"
     )
+    keyboard = keyboards.get_orders_list_keyboard(orders, prefix="my_order")
+
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=keyboard
+        )
+    except TelegramBadRequest as exc:
+        error_text = str(exc)
+        if "no text in the message to edit" in error_text or "there is no text in the message to edit" in error_text:
+            try:
+                await callback.message.delete()
+            except TelegramBadRequest:
+                pass
+            await callback.bot.send_message(
+                callback.message.chat.id,
+                text,
+                reply_markup=keyboard
+            )
+        else:
+            raise
     await callback.answer()
 

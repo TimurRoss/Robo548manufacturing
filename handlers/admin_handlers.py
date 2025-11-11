@@ -289,12 +289,32 @@ async def _render_orders_overview(message: Message, order_type: str, state: FSMC
         f"• Всего (без архива): {stats.get('all', 0)} шт"
     )
 
-    await message.edit_text(
+    text = (
         f"📦 Заказы — {order_type_name}\n\n"
         f"{stats_text}\n\n"
-        "Выберите раздел:",
-        reply_markup=keyboards.get_admin_orders_keyboard(stats, archived_count, order_type)
+        "Выберите раздел:"
     )
+    keyboard = keyboards.get_admin_orders_keyboard(stats, archived_count, order_type)
+
+    try:
+        await message.edit_text(
+            text,
+            reply_markup=keyboard
+        )
+    except TelegramBadRequest as exc:
+        error_text = str(exc)
+        if "no text in the message to edit" in error_text or "there is no text in the message to edit" in error_text:
+            try:
+                await message.delete()
+            except TelegramBadRequest:
+                pass
+            await message.bot.send_message(
+                message.chat.id,
+                text,
+                reply_markup=keyboard
+            )
+        else:
+            raise
 
 
 async def _render_orders_materials(message: Message, order_type: str, state: FSMContext):
@@ -376,6 +396,24 @@ async def toggle_orders_acceptance(callback: CallbackQuery):
         reply_markup=keyboards.get_admin_main_keyboard(orders_enabled)
     )
     await callback.answer(f"Приём заказов {status_text}.")
+
+
+@router.callback_query(F.data == "admin_find_order")
+async def admin_find_order_start(callback: CallbackQuery, state: FSMContext):
+    """Начать поиск заказа по номеру"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+
+    await state.set_state(states.OrderSearchStates.waiting_for_order_number)
+    await state.update_data(order_search_origin="types_menu")
+
+    await callback.message.edit_text(
+        "🔍 Поиск заказа\n\n"
+        "Введите номер заказа сообщением в чат.\n"
+        "Чтобы отменить поиск, напишите «отмена».",
+    )
+    await callback.answer()
 
 
 @router.message(F.text == "Рассылка")
@@ -851,11 +889,31 @@ async def back_to_admin_main(callback: CallbackQuery, state: FSMContext):
     await state.update_data(broadcast_prompt_chat_id=None, broadcast_prompt_message_id=None)
 
     orders_enabled = await database.db.is_orders_enabled()
-    await callback.message.edit_text(
+    text = (
         "🔧 Панель администратора\n\n"
-        "Выберите раздел:",
-        reply_markup=keyboards.get_admin_main_keyboard(orders_enabled)
+        "Выберите раздел:"
     )
+    keyboard = keyboards.get_admin_main_keyboard(orders_enabled)
+
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=keyboard
+        )
+    except TelegramBadRequest as exc:
+        error_text = str(exc)
+        if "no text in the message to edit" in error_text or "there is no text in the message to edit" in error_text:
+            try:
+                await callback.message.delete()
+            except TelegramBadRequest:
+                pass
+            await callback.bot.send_message(
+                callback.message.chat.id,
+                text,
+                reply_markup=keyboard
+            )
+        else:
+            raise
     await callback.answer()
 
 
@@ -1641,4 +1699,78 @@ async def restore_material_process(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("❌ Ошибка при восстановлении доступа!")
 
     await callback.answer()
+
+
+@router.message(states.OrderSearchStates.waiting_for_order_number)
+async def admin_process_order_search(message: Message, state: FSMContext):
+    """Обработка ввода номера заказа для поиска"""
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        return
+
+    text = message.text.strip()
+    if text.lower() in {"отмена", "cancel"}:
+        await state.clear()
+        orders_enabled = await database.db.is_orders_enabled()
+        await message.answer(
+            "Поиск заказов отменён.",
+            reply_markup=keyboards.get_admin_main_keyboard(orders_enabled)
+        )
+        return
+
+    if not text.isdigit():
+        await message.answer("Введите числовой номер заказа или напишите «отмена».")
+        return
+
+    order_id = int(text)
+    order = await database.db.get_order(order_id)
+
+    if not order:
+        await message.answer(
+            f"Заказ №{order_id} не найден. Проверьте номер и попробуйте снова, или напишите «отмена».",
+        )
+        return
+
+    await state.clear()
+
+    order_type = order.get('order_type', '3d_print')
+    list_status = order.get('status_code')
+
+    extra_buttons = [
+        ("➡️ Открыть раздел", f"admin_orders_type:{order_type}"),
+        ("⬅️ В меню", "admin_back_to_main")
+    ]
+
+    detail_text, detail_keyboard, photo_path, _ = _build_admin_order_detail_payload(
+        order,
+        order_type=order_type,
+        list_status=list_status,
+        current_page=0,
+        show_list_back=False,
+        extra_buttons=extra_buttons
+    )
+
+    if photo_path and Path(photo_path).exists():
+        try:
+            photo_file = FSInputFile(photo_path)
+            await message.answer_photo(
+                photo_file,
+                caption=detail_text,
+                reply_markup=detail_keyboard,
+                parse_mode="HTML"
+            )
+        except Exception as exc:
+            logger.error(f"Ошибка при отправке фото (поиск заказа): {exc}")
+            await message.answer(
+                detail_text,
+                reply_markup=detail_keyboard,
+                parse_mode="HTML"
+            )
+    else:
+        await message.answer(
+            detail_text,
+            reply_markup=detail_keyboard,
+            parse_mode="HTML"
+        )
+
 

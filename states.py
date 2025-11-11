@@ -35,3 +35,8 @@ class BroadcastStates(StatesGroup):
     """Состояния для рассылки сообщений администраторами"""
     waiting_for_message = State()
 
+
+class OrderSearchStates(StatesGroup):
+    """Состояния поиска заказа администратором"""
+    waiting_for_order_number = State()
+

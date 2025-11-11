@@ -27,13 +27,15 @@ def get_admin_menu_keyboard() -> ReplyKeyboardMarkup:
     return builder.as_markup(resize_keyboard=True)
 
 
-def get_admin_main_keyboard() -> InlineKeyboardMarkup:
+def get_admin_main_keyboard(orders_enabled: bool = True) -> InlineKeyboardMarkup:
     """Главное меню админ-панели"""
     builder = InlineKeyboardBuilder()
+    toggle_text = "🟢 Приём заказов: открыт" if orders_enabled else "🔴 Приём заказов: закрыт"
     builder.add(InlineKeyboardButton(text="📦 Заказы", callback_data="admin_orders_menu"))
     builder.add(InlineKeyboardButton(text="🔧 Управление материалами", callback_data="admin_manage_materials"))
+    builder.add(InlineKeyboardButton(text=toggle_text, callback_data="admin_toggle_orders"))
     builder.add(InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast"))
-    builder.adjust(1, 1, 1)
+    builder.adjust(1, 1, 1, 1)
     return builder.as_markup()
 
 

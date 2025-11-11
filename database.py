@@ -89,6 +89,21 @@ class Database:
                 )
             """)
 
+            # Таблица настроек
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            """)
+
+            # Значения по умолчанию для настроек
+            cursor = await db.execute("SELECT value FROM settings WHERE key = 'orders_enabled'")
+            if not await cursor.fetchone():
+                await db.execute(
+                    "INSERT INTO settings (key, value) VALUES ('orders_enabled', '1')"
+                )
+
             # Таблица заказов
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS orders (
@@ -760,6 +775,38 @@ class Database:
             )
             await db.commit()
             return cursor.rowcount > 0
+
+    async def get_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        """Получить значение настройки"""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT value FROM settings WHERE key = ?",
+                (key,)
+            )
+            row = await cursor.fetchone()
+            return row[0] if row else default
+
+    async def set_setting(self, key: str, value: str) -> None:
+        """Сохранить значение настройки"""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO settings (key, value)
+                VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (key, value)
+            )
+            await db.commit()
+
+    async def is_orders_enabled(self) -> bool:
+        """Проверить, открыт ли приём заказов"""
+        value = await self.get_setting("orders_enabled", "1")
+        return value != "0"
+
+    async def set_orders_enabled(self, enabled: bool) -> None:
+        """Установить состояние приёма заказов"""
+        await self.set_setting("orders_enabled", "1" if enabled else "0")
 
     async def get_material(self, material_id: int) -> Optional[Dict[str, Any]]:
         """Получить материал по ID"""

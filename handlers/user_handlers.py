@@ -104,6 +104,15 @@ async def cmd_new_order(message: Message, state: FSMContext):
         await message.answer("Пожалуйста, сначала зарегистрируйтесь через /start")
         return
     
+    if user_id not in config.ADMIN_IDS:
+        orders_enabled = await database.db.is_orders_enabled()
+        if not orders_enabled:
+            await message.answer(
+                "Приём новых заказов временно закрыт.\n"
+                "Пожалуйста, попробуйте позже или обратитесь к администратору."
+            )
+            return
+
     # Обновляем username при создании заказа
     await database.db.get_or_create_user(
         user_id,

@@ -145,7 +145,8 @@ async def materials_back_to_list(callback: CallbackQuery, state: FSMContext):
         materials_text = f"📋 {header}:\n\n"
         for material in materials:
             usage_count = material.get('usage_count', 0)
-            materials_text += f"• {material['name']}"
+            availability_suffix = "" if material.get('is_available', 1) else " (недоступен)"
+            materials_text += f"• {material['name']}{availability_suffix}"
             if usage_count > 0:
                 suffix = "раз"
                 materials_text += f" (использован {usage_count} {suffix})"
@@ -207,7 +208,8 @@ async def show_materials_for_type(callback: CallbackQuery, state: FSMContext):
         materials_text = f"📋 {header}:\n\n"
         for material in materials:
             usage_count = material.get('usage_count', 0)
-            materials_text += f"• {material['name']}"
+            availability_suffix = "" if material.get('is_available', 1) else " (недоступен)"
+            materials_text += f"• {material['name']}{availability_suffix}"
             if usage_count > 0:
                 suffix = "раз"
                 if usage_count % 10 == 1 and usage_count % 100 != 11:
@@ -298,7 +300,7 @@ async def _render_orders_overview(message: Message, order_type: str, state: FSMC
 async def _render_orders_materials(message: Message, order_type: str, state: FSMContext):
     """Отобразить список материалов для фильтрации заказов"""
     order_type_name = config.ORDER_TYPES.get(order_type, order_type)
-    materials = await database.db.get_all_materials(order_type)
+    materials = await database.db.get_materials_with_orders(order_type, statuses=("pending", "in_progress"))
 
     await state.update_data(
         admin_order_type=order_type,
@@ -310,12 +312,12 @@ async def _render_orders_materials(message: Message, order_type: str, state: FSM
     if materials:
         body_text = (
             "Выберите материал.\n"
-            "Показываются только заказы в статусах \"В ожидании\" и \"В работе\"."
+            "В списке только материалы, по которым есть активные заказы (\"В ожидании\" или \"В работе\")."
         )
     else:
         body_text = (
-            "Материалы для этого типа заказов отсутствуют.\n"
-            "Добавьте материалы в разделе управления материалами."
+            "Нет материалов с активными заказами.\n"
+            "Добавьте материал и оформите заказ, чтобы он появился в списке."
         )
 
     await message.edit_text(
@@ -1450,7 +1452,8 @@ async def add_material_process(message: Message, state: FSMContext):
             materials_text = f"📋 Доступные материалы {header}:\n\n"
             for material in materials:
                 usage_count = material.get('usage_count', 0)
-                materials_text += f"• {material['name']}"
+                availability_suffix = "" if material.get('is_available', 1) else " (недоступен)"
+                materials_text += f"• {material['name']}{availability_suffix}"
                 if usage_count > 0:
                     materials_text += f" (использован {usage_count} раз"
                     if usage_count == 1:
@@ -1486,7 +1489,7 @@ async def delete_material_start(callback: CallbackQuery, state: FSMContext):
     material_type = callback.data.split(":")[1]
     await state.update_data(material_management_type=material_type)
 
-    materials = await database.db.get_all_materials(material_type)
+    materials = await database.db.get_all_materials(material_type, only_available=True)
     
     if not materials:
         await callback.message.edit_text("Нет материалов для удаления.")
@@ -1496,6 +1499,30 @@ async def delete_material_start(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "Выберите материал для удаления:",
         reply_markup=keyboards.get_delete_materials_keyboard(materials, material_type)
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_restore_material:"))
+async def restore_material_start(callback: CallbackQuery, state: FSMContext):
+    """Начать восстановление доступа к материалу"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+
+    material_type = callback.data.split(":")[1]
+    await state.update_data(material_management_type=material_type)
+
+    all_materials = await database.db.get_all_materials(material_type, only_available=False)
+    disabled_materials = [material for material in all_materials if not material.get("is_available", 1)]
+
+    if not disabled_materials:
+        await callback.answer("Нет недоступных материалов.", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        "Выберите материал для возобновления доступа:",
+        reply_markup=keyboards.get_restore_materials_keyboard(disabled_materials, material_type)
     )
     await callback.answer()
 
@@ -1521,7 +1548,8 @@ async def delete_material_process(callback: CallbackQuery, state: FSMContext):
             materials_text = f"📋 Доступные материалы {header}:\n\n"
             for material in materials:
                 usage_count = material.get('usage_count', 0)
-                materials_text += f"• {material['name']}"
+                availability_suffix = "" if material.get('is_available', 1) else " (недоступен)"
+                materials_text += f"• {material['name']}{availability_suffix}"
                 if usage_count > 0:
                     materials_text += f" (использован {usage_count} раз"
                     if usage_count == 1:
@@ -1536,11 +1564,55 @@ async def delete_material_process(callback: CallbackQuery, state: FSMContext):
             materials_text = f"📋 Доступные материалы {header}:\n\nМатериалы не добавлены."
         
         await callback.message.edit_text(
-            f"✅ Материал удален!\n\n{materials_text}\n\nВыберите действие:",
+            f"✅ Материал помечен как недоступный.\n\n{materials_text}\n\nВыберите действие:",
             reply_markup=keyboards.get_manage_materials_keyboard(material_type)
         )
     else:
         await callback.message.edit_text("❌ Ошибка при удалении!")
     
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("restore_material:"))
+async def restore_material_process(callback: CallbackQuery, state: FSMContext):
+    """Обработка восстановления доступа к материалу"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+
+    _, material_type, material_id_str = callback.data.split(":")
+    material_id = int(material_id_str)
+    success = await database.db.restore_material(material_id)
+
+    if success:
+        materials = await database.db.get_materials_with_usage_count(material_type)
+        header = "для лазерной резки" if material_type == "laser_cut" else "для 3D печати"
+
+        if materials:
+            materials_text = f"📋 Доступные материалы {header}:\n\n"
+            for material in materials:
+                usage_count = material.get('usage_count', 0)
+                availability_suffix = "" if material.get('is_available', 1) else " (недоступен)"
+                materials_text += f"• {material['name']}{availability_suffix}"
+                if usage_count > 0:
+                    materials_text += f" (использован {usage_count} раз"
+                    if usage_count == 1:
+                        materials_text += ")"
+                    elif usage_count < 5:
+                        materials_text += "а)"
+                    else:
+                        materials_text += ")"
+                materials_text += "\n"
+            materials_text += f"\nВсего материалов: {len(materials)}"
+        else:
+            materials_text = f"📋 Доступные материалы {header}:\n\nМатериалы не добавлены."
+
+        await callback.message.edit_text(
+            f"✅ Материал снова доступен.\n\n{materials_text}\n\nВыберите действие:",
+            reply_markup=keyboards.get_manage_materials_keyboard(material_type)
+        )
+    else:
+        await callback.message.edit_text("❌ Ошибка при восстановлении доступа!")
+
     await callback.answer()
 

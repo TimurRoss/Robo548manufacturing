@@ -318,9 +318,10 @@ def get_manage_materials_keyboard(material_type: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.add(InlineKeyboardButton(text="Добавить материал", callback_data=f"admin_add_material:{material_type}"))
     builder.add(InlineKeyboardButton(text="Удалить материал", callback_data=f"admin_delete_material:{material_type}"))
+    builder.add(InlineKeyboardButton(text="Вернуть доступ", callback_data=f"admin_restore_material:{material_type}"))
     builder.add(InlineKeyboardButton(text="⬅️ К выбору типа", callback_data="admin_back_to_material_types"))
     builder.add(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back_to_main"))
-    builder.adjust(1, 1, 1, 1)
+    builder.adjust(1, 1, 1, 1, 1)
     return builder.as_markup()
 
 
@@ -329,8 +330,11 @@ def get_admin_orders_materials_keyboard(materials: list, order_type: str) -> Inl
     builder = InlineKeyboardBuilder()
 
     for material in materials:
+        name = material["name"]
+        if not material.get("is_available", 1):
+            name = f"{name} (недоступен)"
         builder.add(InlineKeyboardButton(
-            text=material["name"],
+            text=name,
             callback_data=f"admin_orders_material:{order_type}:{material['id']}"
         ))
 
@@ -352,6 +356,19 @@ def get_delete_materials_keyboard(materials: list, material_type: str) -> Inline
         builder.add(InlineKeyboardButton(
             text=material["name"],
             callback_data=f"delete_material:{material_type}:{material['id']}"
+        ))
+    builder.add(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin_materials_back:{material_type}"))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def get_restore_materials_keyboard(materials: list, material_type: str) -> InlineKeyboardMarkup:
+    """Клавиатура для восстановления материалов выбранного типа"""
+    builder = InlineKeyboardBuilder()
+    for material in materials:
+        builder.add(InlineKeyboardButton(
+            text=material["name"],
+            callback_data=f"restore_material:{material_type}:{material['id']}"
         ))
     builder.add(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin_materials_back:{material_type}"))
     builder.adjust(1)

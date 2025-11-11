@@ -84,7 +84,8 @@ class Database:
                 CREATE TABLE IF NOT EXISTS materials (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT UNIQUE NOT NULL,
-                    type TEXT NOT NULL DEFAULT '3d_print'
+                    type TEXT NOT NULL DEFAULT '3d_print',
+                    is_available INTEGER NOT NULL DEFAULT 1
                 )
             """)
 
@@ -143,6 +144,10 @@ class Database:
                     await db.execute("ALTER TABLE materials ADD COLUMN type TEXT NOT NULL DEFAULT '3d_print'")
                     await db.commit()
                     logger.info("Добавлено поле type в таблицу materials")
+                if 'is_available' not in material_columns:
+                    await db.execute("ALTER TABLE materials ADD COLUMN is_available INTEGER NOT NULL DEFAULT 1")
+                    await db.commit()
+                    logger.info("Добавлено поле is_available в таблицу materials")
             except Exception as e:
                 logger.warning(f"Ошибка при добавлении полей в orders или materials: {e}")
 
@@ -653,26 +658,31 @@ class Database:
             logger.info(f"Статус заказа №{order_id} изменен на {status_code}")
             return True
 
-    async def get_all_materials(self, material_type: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def get_all_materials(self, material_type: Optional[str] = None, only_available: bool = True) -> List[Dict[str, Any]]:
         """Получить материалы (с optional фильтром по типу)"""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             query = "SELECT * FROM materials"
+            conditions = []
             params: Tuple[Any, ...] = ()
             if material_type:
-                query += " WHERE type = ?"
-                params = (material_type,)
+                conditions.append("type = ?")
+                params += (material_type,)
+            if only_available:
+                conditions.append("is_available = 1")
+            if conditions:
+                query += " WHERE " + " AND ".join(conditions)
             query += " ORDER BY name"
             cursor = await db.execute(query, params)
             rows = await cursor.fetchall()
             return self._order_rows_to_list(rows)
 
-    async def get_materials_with_usage_count(self, material_type: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def get_materials_with_usage_count(self, material_type: Optional[str] = None, include_unavailable: bool = True) -> List[Dict[str, Any]]:
         """Получить материалы с количеством использований в заказах"""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             query = """
-                SELECT m.id, m.name, m.type, COUNT(o.id) as usage_count
+                SELECT m.id, m.name, m.type, m.is_available, COUNT(o.id) as usage_count
                 FROM materials m
                 LEFT JOIN orders o ON m.id = o.material_id
             """
@@ -681,9 +691,38 @@ class Database:
             if material_type:
                 conditions.append("m.type = ?")
                 params += (material_type,)
+            if not include_unavailable:
+                conditions.append("m.is_available = 1")
             if conditions:
                 query += " WHERE " + " AND ".join(conditions)
-            query += " GROUP BY m.id, m.name, m.type ORDER BY m.name"
+            query += " GROUP BY m.id, m.name, m.type, m.is_available ORDER BY m.name"
+            cursor = await db.execute(query, params)
+            rows = await cursor.fetchall()
+            return self._order_rows_to_list(rows)
+
+    async def get_materials_with_orders(
+        self,
+        order_type: str,
+        statuses: Sequence[str] = ("pending", "in_progress")
+    ) -> List[Dict[str, Any]]:
+        """Получить материалы, которые используются в указанных статусах заказов"""
+        if not statuses:
+            return []
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            placeholders = ",".join("?" for _ in statuses)
+            query = f"""
+                SELECT m.id, m.name, m.is_available, COUNT(o.id) as orders_count
+                FROM orders o
+                JOIN materials m ON o.material_id = m.id
+                JOIN statuses s ON o.status_id = s.id
+                WHERE o.order_type = ?
+                  AND s.code IN ({placeholders})
+                GROUP BY m.id, m.name, m.is_available
+                ORDER BY m.name
+            """
+            params: Tuple[Any, ...] = (order_type, *statuses)
             cursor = await db.execute(query, params)
             rows = await cursor.fetchall()
             return self._order_rows_to_list(rows)
@@ -693,7 +732,7 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             try:
                 await db.execute(
-                    "INSERT INTO materials (name, type) VALUES (?, ?)",
+                    "INSERT INTO materials (name, type, is_available) VALUES (?, ?, 1)",
                     (name.strip(), material_type)
                 )
                 await db.commit()
@@ -703,10 +742,20 @@ class Database:
                 return False
 
     async def delete_material(self, material_id: int) -> bool:
-        """Удалить материал"""
+        """Сделать материал недоступным (soft delete)"""
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
-                "DELETE FROM materials WHERE id = ?",
+                "UPDATE materials SET is_available = 0 WHERE id = ?",
+                (material_id,)
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def restore_material(self, material_id: int) -> bool:
+        """Сделать материал вновь доступным"""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "UPDATE materials SET is_available = 1 WHERE id = ?",
                 (material_id,)
             )
             await db.commit()

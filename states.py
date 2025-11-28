@@ -40,3 +40,8 @@ class OrderSearchStates(StatesGroup):
     """Состояния поиска заказа администратором"""
     waiting_for_order_number = State()
 
+
+class RejectionTemplateManagementStates(StatesGroup):
+    """Состояния для управления шаблонными комментариями отклонения"""
+    waiting_for_template_text = State()
+

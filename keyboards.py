@@ -33,9 +33,10 @@ def get_admin_main_keyboard(orders_enabled: bool = True) -> InlineKeyboardMarkup
     toggle_text = "🟢 Приём заказов: открыт" if orders_enabled else "🔴 Приём заказов: закрыт"
     builder.add(InlineKeyboardButton(text="📦 Заказы", callback_data="admin_orders_menu"))
     builder.add(InlineKeyboardButton(text="🔧 Управление материалами", callback_data="admin_manage_materials"))
+    builder.add(InlineKeyboardButton(text="📝 Шаблоны отклонения", callback_data="admin_manage_rejection_templates_menu"))
     builder.add(InlineKeyboardButton(text=toggle_text, callback_data="admin_toggle_orders"))
     builder.add(InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast"))
-    builder.adjust(1, 1, 1, 1)
+    builder.adjust(1, 1, 1, 1, 1)
     return builder.as_markup()
 
 
@@ -377,3 +378,86 @@ def get_restore_materials_keyboard(materials: list, material_type: str) -> Inlin
     builder.adjust(1)
     return builder.as_markup()
 
+
+def get_rejection_templates_keyboard(templates: list, order_id: int, order_type: str, list_status: str = None, list_page: int = 0) -> InlineKeyboardMarkup:
+    """Клавиатура для выбора шаблонного комментария отклонения"""
+    builder = InlineKeyboardBuilder()
+    
+    list_status_str = list_status if list_status else ''
+    
+    for template in templates:
+        # Обрезаем текст шаблона для кнопки (максимум 50 символов)
+        template_text = template["text"]
+        if len(template_text) > 50:
+            template_text = template_text[:47] + "..."
+        builder.add(InlineKeyboardButton(
+            text=template_text,
+            callback_data=f"use_rejection_template:{order_id}:{template['id']}:{order_type}:{list_status_str}:{list_page}"
+        ))
+    
+    builder.add(InlineKeyboardButton(
+        text="✏️ Ввести свой комментарий",
+        callback_data=f"reject_order_custom:{order_id}:{order_type}:{list_status_str}:{list_page}"
+    ))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def get_rejection_template_management_keyboard(order_type: str) -> InlineKeyboardMarkup:
+    """Клавиатура управления шаблонами отклонения для типа заказа"""
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(
+        text="➕ Добавить шаблон",
+        callback_data=f"admin_add_rejection_template:{order_type}"
+    ))
+    builder.add(InlineKeyboardButton(
+        text="🗑️ Удалить шаблон",
+        callback_data=f"admin_delete_rejection_template:{order_type}"
+    ))
+    builder.add(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back_to_main"))
+    builder.adjust(1, 1, 1)
+    return builder.as_markup()
+
+
+def get_delete_rejection_templates_keyboard(templates: list, order_type: str) -> InlineKeyboardMarkup:
+    """Клавиатура для удаления шаблонов отклонения"""
+    builder = InlineKeyboardBuilder()
+    for template in templates:
+        # Обрезаем текст шаблона для кнопки (максимум 50 символов)
+        template_text = template["text"]
+        if len(template_text) > 50:
+            template_text = template_text[:47] + "..."
+        builder.add(InlineKeyboardButton(
+            text=template_text,
+            callback_data=f"delete_rejection_template:{order_type}:{template['id']}"
+        ))
+    builder.add(InlineKeyboardButton(
+        text="⬅️ Назад",
+        callback_data=f"admin_manage_rejection_templates:{order_type}"
+    ))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def get_rejection_template_type_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура выбора типа заказа для управления шаблонами отклонения"""
+    builder = InlineKeyboardBuilder()
+    for order_type, title in config.ORDER_TYPES.items():
+        builder.add(InlineKeyboardButton(
+            text=title,
+            callback_data=f"admin_manage_rejection_templates:{order_type}"
+        ))
+    builder.add(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back_to_main"))
+    builder.adjust(1, 1, 1)
+    return builder.as_markup()
+
+
+def get_rejected_order_notification_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура для уведомления об отклонении заказа"""
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(
+        text="📋 Мои заказы",
+        callback_data="user_back_to_orders"
+    ))
+    builder.adjust(1)
+    return builder.as_markup()

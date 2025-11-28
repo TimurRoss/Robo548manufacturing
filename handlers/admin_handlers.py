@@ -1183,6 +1183,162 @@ async def reject_order_start(callback: CallbackQuery, state: FSMContext):
     list_status = parts[3] if len(parts) > 3 else state_data.get("admin_order_status")
     list_page = int(parts[4]) if len(parts) > 4 else state_data.get("admin_orders_page", 0)
     
+    # Получаем заказ для определения типа
+    order = await database.db.get_order(order_id)
+    if order:
+        order_type = order.get('order_type', order_type or '3d_print')
+    else:
+        order_type = order_type or '3d_print'
+    
+    # Сохраняем order_id в состоянии
+    await state.update_data(
+        order_id=order_id,
+        reject_order_type=order_type,
+        reject_list_status=list_status,
+        reject_list_page=list_page
+    )
+    
+    # Получаем шаблоны для данного типа заказа
+    templates = await database.db.get_rejection_templates(order_type)
+    
+    if templates:
+        # Показываем шаблоны
+        reject_prompt = (
+            f"❌ Отклонение заказа №{order_id}\n\n"
+            "Выберите шаблонный комментарий или введите свой:"
+        )
+        keyboard = keyboards.get_rejection_templates_keyboard(templates, order_id, order_type, list_status, list_page)
+    else:
+        # Если шаблонов нет, сразу запрашиваем ввод
+        reject_prompt = (
+            f"❌ Отклонение заказа №{order_id}\n\n"
+            "Пожалуйста, укажите причину отклонения заказа:"
+        )
+        keyboard = None
+        await state.set_state(states.OrderRejectionStates.waiting_for_rejection_reason)
+
+    try:
+        if keyboard:
+            await callback.message.edit_text(reject_prompt, reply_markup=keyboard)
+        else:
+            await callback.message.edit_text(reject_prompt)
+    except TelegramBadRequest as exc:
+        error_text = str(exc)
+        if "no text in the message to edit" in error_text or "there is no text in the message to edit" in error_text:
+            try:
+                await callback.message.delete()
+            except TelegramBadRequest:
+                pass
+            if keyboard:
+                await callback.bot.send_message(
+                    callback.message.chat.id,
+                    reject_prompt,
+                    reply_markup=keyboard
+                )
+            else:
+                await callback.bot.send_message(
+                    callback.message.chat.id,
+                    reject_prompt
+                )
+        elif "message is not modified" in error_text:
+            # Игнорируем попытку изменить на тот же текст
+            pass
+        else:
+            raise
+
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("use_rejection_template:"))
+async def use_rejection_template(callback: CallbackQuery, state: FSMContext):
+    """Использовать шаблонный комментарий для отклонения заказа"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+    
+    try:
+        parts = callback.data.split(":")
+        _, order_id_str, template_id_str, order_type = parts[:4]
+        order_id = int(order_id_str)
+        template_id = int(template_id_str)
+        list_status = parts[4] if len(parts) > 4 and parts[4] else None
+        list_page = int(parts[5]) if len(parts) > 5 and parts[5] else 0
+    except (ValueError, IndexError):
+        await callback.answer("Некорректные данные", show_alert=True)
+        return
+    
+    # Получаем шаблон
+    template = await database.db.get_rejection_template(template_id)
+    if not template:
+        await callback.answer("Шаблон не найден", show_alert=True)
+        return
+    
+    rejection_reason = template["text"]
+    
+    # Получаем заказ перед архивированием для отправки уведомления
+    order = await database.db.get_order(order_id)
+    
+    # Перемещаем заказ в архив с причиной отклонения
+    success = await database.db.archive_order(order_id, rejection_reason)
+    
+    if not success:
+        await callback.answer("Ошибка при отклонении заказа", show_alert=True)
+        return
+    
+    # Обновляем заказ для отправки уведомления
+    order = await database.db.get_order(order_id)
+    order['rejection_reason'] = rejection_reason
+    
+    # Отправляем уведомление пользователю с причиной отклонения
+    await notify_user_order_status_changed(callback.bot, order, "Отклонен")
+    
+    stats = await database.db.get_orders_statistics(order_type)
+    archived_count = await database.db.count_archived_orders(order_type)
+    order_type_name = config.ORDER_TYPES.get(order_type, order_type)
+
+    await state.update_data(
+        admin_order_type=order_type,
+        admin_order_status='archived',
+        admin_orders_page=list_page
+    )
+
+    stats_text = (
+        f"• В ожидании: {stats.get('pending', 0)} шт\n"
+        f"• В работе: {stats.get('in_progress', 0)} шт\n"
+        f"• Готов: {stats.get('ready', 0)} шт\n"
+        f"• Архив: {archived_count} шт\n"
+        f"• Всего (без архива): {stats.get('all', 0)} шт"
+    )
+
+    await callback.message.edit_text(
+        f"✅ Заказ №{order_id} отклонен и перемещен в архив.\n\n"
+        f"Причина: {rejection_reason}\n\n"
+        f"📦 Заказы — {order_type_name}\n\n"
+        f"{stats_text}\n\nВыберите раздел:",
+        reply_markup=keyboards.get_admin_orders_keyboard(stats, archived_count, order_type)
+    )
+    
+    await callback.answer("Заказ отклонен")
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("reject_order_custom:"))
+async def reject_order_custom_start(callback: CallbackQuery, state: FSMContext):
+    """Начать процесс отклонения заказа с вводом своего комментария"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+    
+    try:
+        parts = callback.data.split(":")
+        _, order_id_str, order_type = parts[:3]
+        order_id = int(order_id_str)
+        list_status = parts[3] if len(parts) > 3 and parts[3] else None
+        list_page = int(parts[4]) if len(parts) > 4 and parts[4] else 0
+    except (ValueError, IndexError):
+        await callback.answer("Некорректные данные", show_alert=True)
+        return
+    
     # Сохраняем order_id в состоянии
     await state.update_data(
         order_id=order_id,
@@ -1210,7 +1366,6 @@ async def reject_order_start(callback: CallbackQuery, state: FSMContext):
                 reject_prompt
             )
         elif "message is not modified" in error_text:
-            # Игнорируем попытку изменить на тот же текст
             pass
         else:
             raise
@@ -1698,6 +1853,172 @@ async def restore_material_process(callback: CallbackQuery, state: FSMContext):
     else:
         await callback.message.edit_text("❌ Ошибка при восстановлении доступа!")
 
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_manage_rejection_templates_menu")
+async def manage_rejection_templates_menu(callback: CallbackQuery, state: FSMContext):
+    """Показать меню управления шаблонами отклонения"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+    
+    await callback.message.edit_text(
+        "📝 Управление шаблонами отклонения заказов\n\n"
+        "Выберите тип заказов для управления шаблонами:",
+        reply_markup=keyboards.get_rejection_template_type_keyboard()
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_manage_rejection_templates:"))
+async def manage_rejection_templates(callback: CallbackQuery, state: FSMContext):
+    """Показать управление шаблонами для выбранного типа заказа"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+    
+    order_type = callback.data.split(":")[1]
+    order_type_name = config.ORDER_TYPES.get(order_type, order_type)
+    
+    templates = await database.db.get_rejection_templates(order_type)
+    
+    if templates:
+        templates_text = f"📋 Шаблоны для {order_type_name}:\n\n"
+        for i, template in enumerate(templates, 1):
+            templates_text += f"{i}. {template['text']}\n"
+        templates_text += f"\nВсего шаблонов: {len(templates)}"
+    else:
+        templates_text = f"📋 Шаблоны для {order_type_name}:\n\nШаблоны не добавлены."
+    
+    await callback.message.edit_text(
+        f"{templates_text}\n\nВыберите действие:",
+        reply_markup=keyboards.get_rejection_template_management_keyboard(order_type)
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_add_rejection_template:"))
+async def add_rejection_template_start(callback: CallbackQuery, state: FSMContext):
+    """Начать добавление шаблона отклонения"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+    
+    order_type = callback.data.split(":")[1]
+    order_type_name = config.ORDER_TYPES.get(order_type, order_type)
+    
+    await state.update_data(rejection_template_order_type=order_type)
+    
+    await callback.message.edit_text(
+        f"➕ Добавление шаблона отклонения для {order_type_name}\n\n"
+        "Введите текст шаблона:"
+    )
+    await state.set_state(states.RejectionTemplateManagementStates.waiting_for_template_text)
+    await callback.answer()
+
+
+@router.message(states.RejectionTemplateManagementStates.waiting_for_template_text)
+async def add_rejection_template_process(message: Message, state: FSMContext):
+    """Обработка добавления шаблона отклонения"""
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        return
+    
+    template_text = message.text.strip()
+    if not template_text:
+        await message.answer("Пожалуйста, введите текст шаблона:")
+        return
+    
+    data = await state.get_data()
+    order_type = data.get('rejection_template_order_type')
+    
+    if not order_type:
+        await message.answer("Ошибка: не найден тип заказа")
+        await state.clear()
+        return
+    
+    success = await database.db.add_rejection_template(order_type, template_text)
+    
+    if success:
+        order_type_name = config.ORDER_TYPES.get(order_type, order_type)
+        templates = await database.db.get_rejection_templates(order_type)
+        
+        if templates:
+            templates_text = f"📋 Шаблоны для {order_type_name}:\n\n"
+            for i, template in enumerate(templates, 1):
+                templates_text += f"{i}. {template['text']}\n"
+            templates_text += f"\nВсего шаблонов: {len(templates)}"
+        else:
+            templates_text = f"📋 Шаблоны для {order_type_name}:\n\nШаблоны не добавлены."
+        
+        await message.answer(
+            f"✅ Шаблон добавлен!\n\n{templates_text}\n\nВыберите действие:",
+            reply_markup=keyboards.get_rejection_template_management_keyboard(order_type)
+        )
+    else:
+        await message.answer("❌ Ошибка при добавлении шаблона")
+    
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("admin_delete_rejection_template:"))
+async def delete_rejection_template_start(callback: CallbackQuery, state: FSMContext):
+    """Начать удаление шаблона отклонения"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+    
+    order_type = callback.data.split(":")[1]
+    
+    templates = await database.db.get_rejection_templates(order_type)
+    
+    if not templates:
+        await callback.answer("Нет шаблонов для удаления", show_alert=True)
+        return
+    
+    await callback.message.edit_text(
+        "🗑️ Выберите шаблон для удаления:",
+        reply_markup=keyboards.get_delete_rejection_templates_keyboard(templates, order_type)
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("delete_rejection_template:"))
+async def delete_rejection_template_process(callback: CallbackQuery, state: FSMContext):
+    """Обработка удаления шаблона отклонения"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("У вас нет доступа", show_alert=True)
+        return
+    
+    try:
+        _, order_type, template_id_str = callback.data.split(":")
+        template_id = int(template_id_str)
+    except (ValueError, IndexError):
+        await callback.answer("Некорректные данные", show_alert=True)
+        return
+    
+    success = await database.db.delete_rejection_template(template_id)
+    
+    if success:
+        order_type_name = config.ORDER_TYPES.get(order_type, order_type)
+        templates = await database.db.get_rejection_templates(order_type)
+        
+        if templates:
+            templates_text = f"📋 Шаблоны для {order_type_name}:\n\n"
+            for i, template in enumerate(templates, 1):
+                templates_text += f"{i}. {template['text']}\n"
+            templates_text += f"\nВсего шаблонов: {len(templates)}"
+        else:
+            templates_text = f"📋 Шаблоны для {order_type_name}:\n\nШаблоны не добавлены."
+        
+        await callback.message.edit_text(
+            f"✅ Шаблон удален!\n\n{templates_text}\n\nВыберите действие:",
+            reply_markup=keyboards.get_rejection_template_management_keyboard(order_type)
+        )
+    else:
+        await callback.answer("Ошибка при удалении шаблона", show_alert=True)
+    
     await callback.answer()
 
 

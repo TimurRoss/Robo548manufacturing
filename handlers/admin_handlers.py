@@ -2122,7 +2122,8 @@ async def admin_view_order_from_user(callback: CallbackQuery, state: FSMContext)
         admin_orders_page=0
     )
 
-    extra_buttons = [("⬅️ К моим заказам", "user_back_to_orders")]
+    # Убрана кнопка "⬅️ К моим заказам" - пользователь может использовать команду "Мои заказы" из меню
+    extra_buttons = None
     detail_text, detail_keyboard, photo_path, _ = _build_admin_order_detail_payload(
         order,
         order_type=order_type,

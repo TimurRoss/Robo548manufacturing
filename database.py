@@ -436,7 +436,7 @@ class Database:
             return self._order_row_to_dict(order)
 
     async def get_user_orders(self, user_id: int) -> List[Dict[str, Any]]:
-        """Получить все заказы пользователя"""
+        """Получить все заказы пользователя (без архивных)"""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("""
@@ -446,11 +446,43 @@ class Database:
                 FROM orders o
                 JOIN statuses s ON o.status_id = s.id
                 LEFT JOIN materials m ON o.material_id = m.id
-                WHERE o.user_id = ?
+                WHERE o.user_id = ? AND s.code != 'archived'
                 ORDER BY o.created_at DESC
             """, (user_id,))
             rows = await cursor.fetchall()
             return self._order_rows_to_list(rows)
+
+    async def get_user_archived_orders(self, user_id: int, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
+        """Получить архивированные заказы пользователя"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            query = """
+                SELECT o.*, 
+                       s.code as status_code, s.name as status_name,
+                       m.name as material_name
+                FROM orders o
+                JOIN statuses s ON o.status_id = s.id
+                LEFT JOIN materials m ON o.material_id = m.id
+                WHERE o.user_id = ? AND s.code = 'archived'
+                ORDER BY o.created_at DESC
+            """
+            if limit:
+                query += f" LIMIT {limit} OFFSET {offset}"
+            
+            cursor = await db.execute(query, (user_id,))
+            rows = await cursor.fetchall()
+            return self._order_rows_to_list(rows)
+
+    async def count_user_archived_orders(self, user_id: int) -> int:
+        """Получить количество архивированных заказов пользователя"""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("""
+                SELECT COUNT(*) FROM orders o
+                JOIN statuses s ON o.status_id = s.id
+                WHERE o.user_id = ? AND s.code = 'archived'
+            """, (user_id,))
+            result = await cursor.fetchone()
+            return result[0] if result else 0
 
     async def get_orders_statistics(self, order_type: Optional[str] = None) -> Dict[str, int]:
         """Получить статистику по заказам по статусам (без архива и rejected)"""

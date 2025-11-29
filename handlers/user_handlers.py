@@ -47,11 +47,47 @@ async def cmd_start(message: Message, state: FSMContext):
         )
         user = await database.db.get_user(user_id)
         keyboard = keyboards.get_admin_menu_keyboard() if user_id in config.ADMIN_IDS else keyboards.get_main_menu_keyboard()
-        await message.answer(
+        
+        # Отправляем фото с подсказкой к меню
+        menu_help_photo_path = Path("files/menu_help.png")
+        help_text = (
             f"Здравствуйте, {user['first_name']} {user['last_name']}!\n\n"
-            "Выберите действие:",
-            reply_markup=keyboard
+            "📋 <b>Подсказка по использованию меню:</b>\n\n"
+            "• <b>Создать заказ</b> - начать новый заказ на 3D печать или лазерную резку\n"
+            "• <b>Мои заказы</b> - просмотреть все ваши заказы и их статусы\n"
         )
+        
+        if user_id in config.ADMIN_IDS:
+            help_text += "• <b>Админ-панель</b> - управление заказами и настройками\n"
+            help_text += "• <b>Рассылка</b> - отправка сообщений всем пользователям\n"
+        
+        help_text += "\nВыберите действие из меню ниже:"
+        
+        try:
+            if menu_help_photo_path.exists():
+                photo_file = FSInputFile(menu_help_photo_path)
+                await message.answer_photo(
+                    photo_file,
+                    caption=help_text,
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )
+            else:
+                # Если фото нет, отправляем только текст
+                await message.answer(
+                    help_text,
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )
+        except Exception as e:
+            logger.error(f"Ошибка при отправке фото подсказки: {e}")
+            # В случае ошибки отправляем только текст
+            await message.answer(
+                help_text,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        
         await state.clear()
 
 

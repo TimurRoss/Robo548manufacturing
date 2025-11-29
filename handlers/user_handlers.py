@@ -4,7 +4,7 @@
 import html
 
 from aiogram import Router, F
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
@@ -612,6 +612,74 @@ async def show_user_order_detail(callback: CallbackQuery):
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("user_cancel_order:"))
+async def user_cancel_order(callback: CallbackQuery):
+    """Обработка отмены заказа пользователем"""
+    order_id = int(callback.data.split(":")[1])
+    order = await database.db.get_order(order_id)
+    
+    if not order or order['user_id'] != callback.from_user.id:
+        try:
+            await callback.answer("Заказ не найден", show_alert=True)
+        except Exception:
+            pass
+        return
+    
+    if order.get('status_code') != 'pending':
+        try:
+            await callback.answer("Отменить можно только заказы в статусе 'В ожидании'", show_alert=True)
+        except Exception:
+            pass
+        return
+    
+    # Отвечаем на callback перед долгими операциями
+    try:
+        await callback.answer("Заказ отменен", show_alert=False)
+    except Exception:
+        pass  # Игнорируем ошибки при ответе на callback
+    
+    # Перемещаем заказ в архив с причиной "Отменен пользователем"
+    success = await database.db.archive_order(order_id, "Отменен пользователем")
+    
+    if not success:
+        logger.error(f"Ошибка при отмене заказа №{order_id}")
+        return
+    
+    # Обновляем заказ и возвращаемся к списку заказов
+    orders = await database.db.get_user_orders(callback.from_user.id)
+    archived_count = await database.db.count_user_archived_orders(callback.from_user.id)
+    
+    text = "Ваши заказы:\n\n"
+    if orders:
+        text += "Выберите заказ для просмотра:"
+    else:
+        text += "У вас нет активных заказов."
+    
+    keyboard = keyboards.get_orders_list_keyboard(orders, prefix="my_order", show_archive_button=archived_count > 0, show_back_button=False)
+    
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=keyboard
+        )
+    except TelegramBadRequest as exc:
+        error_text = str(exc).lower()
+        if "no text in the message to edit" in error_text or "there is no text in the message to edit" in error_text:
+            try:
+                await callback.message.delete()
+            except TelegramBadRequest:
+                pass
+            await callback.bot.send_message(
+                callback.message.chat.id,
+                text,
+                reply_markup=keyboard
+            )
+        else:
+            logger.warning(f"Ошибка при редактировании сообщения в user_cancel_order: {exc}")
+    except Exception as exc:
+        logger.error(f"Неожиданная ошибка в user_cancel_order: {exc}")
+
+
 @router.callback_query(F.data.startswith("user_picked_up:"))
 async def user_picked_up_order(callback: CallbackQuery):
     """Обработка нажатия кнопки 'Забрал' пользователем"""
@@ -644,14 +712,22 @@ async def user_picked_up_order(callback: CallbackQuery):
 @router.callback_query(F.data == "user_back_to_orders")
 async def user_back_to_orders(callback: CallbackQuery):
     """Вернуться к списку заказов пользователя (используется из архива)"""
+    # Отвечаем на callback как можно раньше, чтобы избежать истечения таймаута
+    try:
+        await callback.answer()
+    except Exception:
+        pass  # Игнорируем ошибки при ответе на callback
+    
     user_id = callback.from_user.id
     
     orders = await database.db.get_user_orders(user_id)
     archived_count = await database.db.count_user_archived_orders(user_id)
     
     if not orders and archived_count == 0:
-        await callback.message.edit_text("У вас пока нет заказов.")
-        await callback.answer()
+        try:
+            await callback.message.edit_text("У вас пока нет заказов.")
+        except Exception as e:
+            logger.warning(f"Ошибка при редактировании сообщения в user_back_to_orders: {e}")
         return
     
     text = "Ваши заказы:\n\n"
@@ -667,18 +743,16 @@ async def user_back_to_orders(callback: CallbackQuery):
             text,
             reply_markup=keyboard
         )
-        await callback.answer()
     except TelegramBadRequest as exc:
         error_text = str(exc).lower()
-        # Если сообщение не изменилось, просто игнорируем ошибку и отвечаем
+        # Если сообщение не изменилось, просто игнорируем ошибку
         if "message is not modified" in error_text:
-            await callback.answer()
             return
         # Если сообщение не содержит текста (например, это фото), удаляем и отправляем новое
         if "no text in the message to edit" in error_text or "there is no text in the message to edit" in error_text:
             try:
                 await callback.message.delete()
-            except TelegramBadRequest:
+            except Exception:
                 pass
             try:
                 await callback.bot.send_message(
@@ -686,18 +760,32 @@ async def user_back_to_orders(callback: CallbackQuery):
                     text,
                     reply_markup=keyboard
                 )
-                await callback.answer()
             except Exception as e:
                 logger.error(f"Ошибка при отправке сообщения в user_back_to_orders: {e}")
-                await callback.answer("Ошибка при отображении заказов", show_alert=True)
-                return
         else:
-            # Для других ошибок просто логируем и отвечаем
+            # Для других ошибок просто логируем
             logger.warning(f"Ошибка при редактировании сообщения в user_back_to_orders: {exc}")
-            await callback.answer()
+    except TelegramNetworkError as exc:
+        # Сетевые ошибки - логируем и пытаемся отправить новое сообщение
+        logger.warning(f"Сетевая ошибка в user_back_to_orders: {exc}")
+        try:
+            await callback.bot.send_message(
+                callback.message.chat.id,
+                text,
+                reply_markup=keyboard
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при отправке сообщения после сетевой ошибки в user_back_to_orders: {e}")
     except Exception as exc:
         logger.error(f"Неожиданная ошибка в user_back_to_orders: {exc}")
-        await callback.answer("Произошла ошибка", show_alert=True)
+        try:
+            await callback.bot.send_message(
+                callback.message.chat.id,
+                text,
+                reply_markup=keyboard
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при отправке сообщения после ошибки в user_back_to_orders: {e}")
 
 
 async def _show_user_archived_orders_page(callback: CallbackQuery, page: int = 0, orders_per_page: int = 6):

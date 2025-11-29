@@ -289,8 +289,10 @@ def get_order_detail_keyboard(
             else:
                 builder.row(InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="admin_back_to_orders"))
     else:
-        # Для пользователей добавляем кнопку "Назад" для возврата к списку заказов
-        if current_status == "ready":
+        # Для пользователей добавляем кнопки в зависимости от статуса
+        if current_status == "pending":
+            builder.row(InlineKeyboardButton(text="❌ Отменить заказ", callback_data=f"user_cancel_order:{order_id}"))
+        elif current_status == "ready":
             builder.row(InlineKeyboardButton(text="✅ Забрал", callback_data=f"user_picked_up:{order_id}"))
         builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="user_back_to_orders"))
 

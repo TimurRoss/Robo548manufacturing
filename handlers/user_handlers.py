@@ -4,7 +4,8 @@
 import html
 
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
+from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
 from pathlib import Path
@@ -46,11 +47,47 @@ async def cmd_start(message: Message, state: FSMContext):
         )
         user = await database.db.get_user(user_id)
         keyboard = keyboards.get_admin_menu_keyboard() if user_id in config.ADMIN_IDS else keyboards.get_main_menu_keyboard()
-        await message.answer(
+        
+        # Отправляем фото с подсказкой к меню
+        menu_help_photo_path = Path("files/menu_help.png")
+        help_text = (
             f"Здравствуйте, {user['first_name']} {user['last_name']}!\n\n"
-            "Выберите действие:",
-            reply_markup=keyboard
+            "📋 <b>Подсказка по использованию меню:</b>\n\n"
+            "• <b>Создать заказ</b> - начать новый заказ на 3D печать или лазерную резку\n"
+            "• <b>Мои заказы</b> - просмотреть все ваши заказы и их статусы\n"
         )
+        
+        if user_id in config.ADMIN_IDS:
+            help_text += "• <b>Админ-панель</b> - управление заказами и настройками\n"
+            help_text += "• <b>Рассылка</b> - отправка сообщений всем пользователям\n"
+        
+        help_text += "\nВыберите действие из меню ниже:"
+        
+        try:
+            if menu_help_photo_path.exists():
+                photo_file = FSInputFile(menu_help_photo_path)
+                await message.answer_photo(
+                    photo_file,
+                    caption=help_text,
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )
+            else:
+                # Если фото нет, отправляем только текст
+                await message.answer(
+                    help_text,
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )
+        except Exception as e:
+            logger.error(f"Ошибка при отправке фото подсказки: {e}")
+            # В случае ошибки отправляем только текст
+            await message.answer(
+                help_text,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        
         await state.clear()
 
 
@@ -507,15 +544,21 @@ async def cmd_my_orders(message: Message):
         return
     
     orders = await database.db.get_user_orders(user_id)
+    archived_count = await database.db.count_user_archived_orders(user_id)
     
-    if not orders:
+    if not orders and archived_count == 0:
         await message.answer("У вас пока нет заказов.")
         return
     
+    text = "Ваши заказы:\n\n"
+    if orders:
+        text += "Выберите заказ для просмотра:"
+    else:
+        text += "У вас нет активных заказов."
+    
     await message.answer(
-        "Ваши заказы:\n\n"
-        "Выберите заказ для просмотра:",
-        reply_markup=keyboards.get_orders_list_keyboard(orders, prefix="my_order")
+        text,
+        reply_markup=keyboards.get_orders_list_keyboard(orders, prefix="my_order", show_archive_button=archived_count > 0, show_back_button=False)
     )
 
 
@@ -529,31 +572,112 @@ async def show_user_order_detail(callback: CallbackQuery):
         await callback.answer("Заказ не найден", show_alert=True)
         return
     
-    status_name = order.get('status_name', 'Неизвестно')
-    material_name = order.get('material_name', 'Не указан')
+    extra_buttons: list[tuple[str, str]] | None = None
+    if callback.from_user.id in config.ADMIN_IDS:
+        extra_buttons = [("🔧 Открыть админские действия", f"admin_view_from_user:{order_id}")]
+
+    status_name = order.get('status_name') or 'Неизвестно'
+    material_name = order.get('material_name') or 'Не указан'
     status_code = order.get('status_code', 'unknown')
     order_type_code = order.get('order_type', '3d_print')
     order_type_name = config.ORDER_TYPES.get(order_type_code, order_type_code)
     
+    # Безопасное экранирование с проверкой на None
+    created_at = order.get('created_at') or 'Не указана'
+    part_name = order.get('part_name') or 'Не указано'
+    
     order_text = (
         f"📋 Заказ №{order['id']}\n\n"
-        f"📅 Дата создания: {html.escape(order['created_at'])}\n"
+        f"📅 Дата создания: {html.escape(str(created_at))}\n"
         f"⚙️ Тип: {html.escape(order_type_name)}\n"
-        f"📦 Название детали: {html.escape(order['part_name'])}\n"
-        f"📊 Статус: {html.escape(status_name)}\n"
+        f"📦 Название детали: {html.escape(str(part_name))}\n"
+        f"📊 Статус: {html.escape(str(status_name))}\n"
         "\n"
-        f"<b>Материал:</b>\n{html.escape(material_name)}"
+        f"<b>Материал:</b>\n{html.escape(str(material_name))}"
     )
     
     if order.get('comment'):
-        order_text += f"\n\n<b>Комментарий:</b>\n{html.escape(order['comment'])}"
+        order_text += f"\n\n<b>Комментарий:</b>\n{html.escape(str(order['comment']))}"
     
     await callback.message.edit_text(
         order_text,
-        reply_markup=keyboards.get_order_detail_keyboard(order_id, status_code, is_admin=False),
+        reply_markup=keyboards.get_order_detail_keyboard(
+            order_id,
+            status_code,
+            is_admin=False,
+            extra_buttons=extra_buttons
+        ),
         parse_mode="HTML"
     )
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("user_cancel_order:"))
+async def user_cancel_order(callback: CallbackQuery):
+    """Обработка отмены заказа пользователем"""
+    order_id = int(callback.data.split(":")[1])
+    order = await database.db.get_order(order_id)
+    
+    if not order or order['user_id'] != callback.from_user.id:
+        try:
+            await callback.answer("Заказ не найден", show_alert=True)
+        except Exception:
+            pass
+        return
+    
+    if order.get('status_code') != 'pending':
+        try:
+            await callback.answer("Отменить можно только заказы в статусе 'В ожидании'", show_alert=True)
+        except Exception:
+            pass
+        return
+    
+    # Отвечаем на callback перед долгими операциями
+    try:
+        await callback.answer("Заказ отменен", show_alert=False)
+    except Exception:
+        pass  # Игнорируем ошибки при ответе на callback
+    
+    # Перемещаем заказ в архив с причиной "Отменен пользователем"
+    success = await database.db.archive_order(order_id, "Отменен пользователем")
+    
+    if not success:
+        logger.error(f"Ошибка при отмене заказа №{order_id}")
+        return
+    
+    # Обновляем заказ и возвращаемся к списку заказов
+    orders = await database.db.get_user_orders(callback.from_user.id)
+    archived_count = await database.db.count_user_archived_orders(callback.from_user.id)
+    
+    text = "Ваши заказы:\n\n"
+    if orders:
+        text += "Выберите заказ для просмотра:"
+    else:
+        text += "У вас нет активных заказов."
+    
+    keyboard = keyboards.get_orders_list_keyboard(orders, prefix="my_order", show_archive_button=archived_count > 0, show_back_button=False)
+    
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=keyboard
+        )
+    except TelegramBadRequest as exc:
+        error_text = str(exc).lower()
+        if "no text in the message to edit" in error_text or "there is no text in the message to edit" in error_text:
+            try:
+                await callback.message.delete()
+            except TelegramBadRequest:
+                pass
+            await callback.bot.send_message(
+                callback.message.chat.id,
+                text,
+                reply_markup=keyboard
+            )
+        else:
+            logger.warning(f"Ошибка при редактировании сообщения в user_cancel_order: {exc}")
+    except Exception as exc:
+        logger.error(f"Неожиданная ошибка в user_cancel_order: {exc}")
 
 
 @router.callback_query(F.data.startswith("user_picked_up:"))
@@ -587,20 +711,272 @@ async def user_picked_up_order(callback: CallbackQuery):
 
 @router.callback_query(F.data == "user_back_to_orders")
 async def user_back_to_orders(callback: CallbackQuery):
-    """Вернуться к списку заказов пользователя"""
+    """Вернуться к списку заказов пользователя (используется из архива)"""
+    # Отвечаем на callback как можно раньше, чтобы избежать истечения таймаута
+    try:
+        await callback.answer()
+    except Exception:
+        pass  # Игнорируем ошибки при ответе на callback
+    
     user_id = callback.from_user.id
     
     orders = await database.db.get_user_orders(user_id)
+    archived_count = await database.db.count_user_archived_orders(user_id)
     
-    if not orders:
-        await callback.message.edit_text("У вас пока нет заказов.")
-        await callback.answer()
+    if not orders and archived_count == 0:
+        try:
+            await callback.message.edit_text("У вас пока нет заказов.")
+        except Exception as e:
+            logger.warning(f"Ошибка при редактировании сообщения в user_back_to_orders: {e}")
         return
     
-    await callback.message.edit_text(
-        "Ваши заказы:\n\n"
-        "Выберите заказ для просмотра:",
-        reply_markup=keyboards.get_orders_list_keyboard(orders, prefix="my_order")
+    text = "Ваши заказы:\n\n"
+    if orders:
+        text += "Выберите заказ для просмотра:"
+    else:
+        text += "У вас нет активных заказов."
+    
+    keyboard = keyboards.get_orders_list_keyboard(orders, prefix="my_order", show_archive_button=archived_count > 0, show_back_button=False)
+
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=keyboard
+        )
+    except TelegramBadRequest as exc:
+        error_text = str(exc).lower()
+        # Если сообщение не изменилось, просто игнорируем ошибку
+        if "message is not modified" in error_text:
+            return
+        # Если сообщение не содержит текста (например, это фото), удаляем и отправляем новое
+        if "no text in the message to edit" in error_text or "there is no text in the message to edit" in error_text:
+            try:
+                await callback.message.delete()
+            except Exception:
+                pass
+            try:
+                await callback.bot.send_message(
+                    callback.message.chat.id,
+                    text,
+                    reply_markup=keyboard
+                )
+            except Exception as e:
+                logger.error(f"Ошибка при отправке сообщения в user_back_to_orders: {e}")
+        else:
+            # Для других ошибок просто логируем
+            logger.warning(f"Ошибка при редактировании сообщения в user_back_to_orders: {exc}")
+    except TelegramNetworkError as exc:
+        # Сетевые ошибки - логируем и пытаемся отправить новое сообщение
+        logger.warning(f"Сетевая ошибка в user_back_to_orders: {exc}")
+        try:
+            await callback.bot.send_message(
+                callback.message.chat.id,
+                text,
+                reply_markup=keyboard
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при отправке сообщения после сетевой ошибки в user_back_to_orders: {e}")
+    except Exception as exc:
+        logger.error(f"Неожиданная ошибка в user_back_to_orders: {exc}")
+        try:
+            await callback.bot.send_message(
+                callback.message.chat.id,
+                text,
+                reply_markup=keyboard
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при отправке сообщения после ошибки в user_back_to_orders: {e}")
+
+
+async def _show_user_archived_orders_page(callback: CallbackQuery, page: int = 0, orders_per_page: int = 6):
+    """Показать страницу с архивными заказами пользователя"""
+    user_id = callback.from_user.id
+    
+    total_count = await database.db.count_user_archived_orders(user_id)
+    
+    if total_count == 0:
+        orders = await database.db.get_user_orders(user_id)
+        archived_count = await database.db.count_user_archived_orders(user_id)
+        
+        text = "📦 Архив\n\nУ вас нет архивных заказов.\n\nВаши заказы:\n\n"
+        if orders:
+            text += "Выберите заказ для просмотра:"
+        else:
+            text += "У вас нет активных заказов."
+        
+        await callback.message.edit_text(
+            text,
+            reply_markup=keyboards.get_orders_list_keyboard(orders, prefix="my_order", show_archive_button=archived_count > 0, show_back_button=False)
+        )
+        await callback.answer("Архив пуст")
+        return
+    
+    total_pages = (total_count + orders_per_page - 1) // orders_per_page if total_count > 0 else 1
+    page = min(page, max(total_pages - 1, 0))
+    offset = page * orders_per_page
+    
+    orders = await database.db.get_user_archived_orders(user_id, limit=orders_per_page, offset=offset)
+    
+    if not orders and page > 0:
+        # Если после удаления заказов текущая страница опустела, пробуем предыдущую
+        await _show_user_archived_orders_page(callback, page=page - 1, orders_per_page=orders_per_page)
+        return
+    
+    start_num = page * orders_per_page + 1
+    end_num = min((page + 1) * orders_per_page, total_count)
+    
+    orders_text = (
+        f"📦 Архив\n\n"
+        f"Заказы {start_num}-{end_num} из {total_count}\n"
+        f"Страница {page + 1} из {total_pages}\n\n"
+        "Выберите заказ для просмотра:"
     )
+    
+    orders_keyboard = keyboards.get_orders_list_keyboard(
+        orders,
+        prefix="user_archived_order",
+        current_page=page,
+        total_pages=total_pages,
+        back_callback="user_back_to_orders",
+        back_text="⬅️ К заказам",
+        show_back_button=True
+    )
+    
+    try:
+        await callback.message.edit_text(
+            orders_text,
+            reply_markup=orders_keyboard
+        )
+    except TelegramBadRequest as exc:
+        error_text = str(exc)
+        if "message is not modified" in error_text:
+            await callback.answer("Эта страница уже открыта.")
+            return
+        if "no text in the message to edit" in error_text or "there is no text in the message to edit" in error_text:
+            try:
+                await callback.message.delete()
+            except TelegramBadRequest:
+                pass
+            await callback.bot.send_message(
+                callback.message.chat.id,
+                orders_text,
+                reply_markup=orders_keyboard
+            )
+        else:
+            raise
+
+
+@router.callback_query(F.data.startswith("user_archived_orders:"))
+async def show_user_archived_orders(callback: CallbackQuery):
+    """Показать архивные заказы пользователя (первая страница)"""
+    try:
+        page = int(callback.data.split(":")[1])
+    except (ValueError, IndexError):
+        page = 0
+    
+    await _show_user_archived_orders_page(callback, page=page)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("user_archived_orders_page:"))
+async def show_user_archived_orders_page(callback: CallbackQuery):
+    """Показать конкретную страницу с архивными заказами пользователя"""
+    try:
+        page = int(callback.data.split(":")[1])
+    except (ValueError, IndexError):
+        page = 0
+    
+    await _show_user_archived_orders_page(callback, page=page)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("user_archived_order:"))
+async def show_user_archived_order_detail(callback: CallbackQuery):
+    """Показать детали архивного заказа пользователю"""
+    try:
+        parts = callback.data.split(":")
+        order_id = int(parts[1])
+        page = int(parts[2]) if len(parts) > 2 else 0
+    except (ValueError, IndexError):
+        await callback.answer("Некорректные данные", show_alert=True)
+        return
+    
+    order = await database.db.get_order(order_id)
+    
+    if not order or order['user_id'] != callback.from_user.id:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+    
+    if order.get('status_code') != 'archived':
+        await callback.answer("Этот заказ не в архиве", show_alert=True)
+        return
+    
+    extra_buttons: list[tuple[str, str]] | None = None
+    if callback.from_user.id in config.ADMIN_IDS:
+        extra_buttons = [("🔧 Открыть админские действия", f"admin_view_from_user:{order_id}")]
+
+    status_name = order.get('status_name') or 'Неизвестно'
+    material_name = order.get('material_name') or 'Не указан'
+    status_code = order.get('status_code', 'unknown')
+    order_type_code = order.get('order_type', '3d_print')
+    order_type_name = config.ORDER_TYPES.get(order_type_code, order_type_code)
+    
+    # Безопасное экранирование с проверкой на None
+    created_at = order.get('created_at') or 'Не указана'
+    part_name = order.get('part_name') or 'Не указано'
+    
+    order_text = (
+        f"📋 Заказ №{order['id']}\n\n"
+        f"📅 Дата создания: {html.escape(str(created_at))}\n"
+        f"⚙️ Тип: {html.escape(order_type_name)}\n"
+        f"📦 Название детали: {html.escape(str(part_name))}\n"
+        f"📊 Статус: {html.escape(str(status_name))}\n"
+        "\n"
+        f"<b>Материал:</b>\n{html.escape(str(material_name))}"
+    )
+    
+    if order.get('photo_caption'):
+        order_text += f"\n\n📝 Подпись к фото: {html.escape(str(order['photo_caption']))}"
+    
+    if order.get('comment'):
+        order_text += f"\n\n<b>Комментарий:</b>\n{html.escape(str(order['comment']))}"
+    
+    if order.get('rejection_reason'):
+        order_text += f"\n\n❌ Причина отклонения: {html.escape(str(order['rejection_reason']))}"
+    
+    keyboard = keyboards.get_order_detail_keyboard(
+        order_id,
+        status_code,
+        is_admin=False,
+        show_list_back=True,
+        extra_buttons=[("⬅️ К архиву", f"user_archived_orders:{page}")] + (extra_buttons or [])
+    )
+    
+    photo_path = order.get('photo_path')
+    if photo_path and Path(photo_path).exists():
+        try:
+            photo_file = FSInputFile(photo_path)
+            await callback.message.delete()
+            await callback.bot.send_photo(
+                callback.message.chat.id,
+                photo_file,
+                caption=order_text,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при отправке фото: {e}")
+            await callback.message.edit_text(
+                order_text,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+    else:
+        await callback.message.edit_text(
+            order_text,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+    
     await callback.answer()
 

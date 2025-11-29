@@ -39,6 +39,7 @@ config_local.py
 
 # IDE
 .vscode/
+.cursor/
 .idea/
 *.swp
 *.swo

@@ -97,6 +97,15 @@ class Database:
                 )
             """)
 
+            # Таблица шаблонных комментариев для отклонения заказов
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS rejection_templates (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_type TEXT NOT NULL,
+                    text TEXT NOT NULL
+                )
+            """)
+
             # Значения по умолчанию для настроек
             cursor = await db.execute("SELECT value FROM settings WHERE key = 'orders_enabled'")
             if not await cursor.fetchone():
@@ -427,7 +436,7 @@ class Database:
             return self._order_row_to_dict(order)
 
     async def get_user_orders(self, user_id: int) -> List[Dict[str, Any]]:
-        """Получить все заказы пользователя"""
+        """Получить все заказы пользователя (без архивных)"""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("""
@@ -437,11 +446,43 @@ class Database:
                 FROM orders o
                 JOIN statuses s ON o.status_id = s.id
                 LEFT JOIN materials m ON o.material_id = m.id
-                WHERE o.user_id = ?
+                WHERE o.user_id = ? AND s.code != 'archived'
                 ORDER BY o.created_at DESC
             """, (user_id,))
             rows = await cursor.fetchall()
             return self._order_rows_to_list(rows)
+
+    async def get_user_archived_orders(self, user_id: int, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
+        """Получить архивированные заказы пользователя"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            query = """
+                SELECT o.*, 
+                       s.code as status_code, s.name as status_name,
+                       m.name as material_name
+                FROM orders o
+                JOIN statuses s ON o.status_id = s.id
+                LEFT JOIN materials m ON o.material_id = m.id
+                WHERE o.user_id = ? AND s.code = 'archived'
+                ORDER BY o.created_at DESC
+            """
+            if limit:
+                query += f" LIMIT {limit} OFFSET {offset}"
+            
+            cursor = await db.execute(query, (user_id,))
+            rows = await cursor.fetchall()
+            return self._order_rows_to_list(rows)
+
+    async def count_user_archived_orders(self, user_id: int) -> int:
+        """Получить количество архивированных заказов пользователя"""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("""
+                SELECT COUNT(*) FROM orders o
+                JOIN statuses s ON o.status_id = s.id
+                WHERE o.user_id = ? AND s.code = 'archived'
+            """, (user_id,))
+            result = await cursor.fetchone()
+            return result[0] if result else 0
 
     async def get_orders_statistics(self, order_type: Optional[str] = None) -> Dict[str, int]:
         """Получить статистику по заказам по статусам (без архива и rejected)"""
@@ -1028,6 +1069,53 @@ class Database:
             
             logger.info(f"Заказ №{order_id} удален из БД")
             return cursor.rowcount > 0
+
+    async def get_rejection_templates(self, order_type: str) -> List[Dict[str, Any]]:
+        """Получить шаблонные комментарии для отклонения заказов по типу"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM rejection_templates WHERE order_type = ? ORDER BY id",
+                (order_type,)
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def add_rejection_template(self, order_type: str, text: str) -> bool:
+        """Добавить шаблонный комментарий для отклонения заказов"""
+        async with aiosqlite.connect(self.db_path) as db:
+            try:
+                await db.execute(
+                    "INSERT INTO rejection_templates (order_type, text) VALUES (?, ?)",
+                    (order_type, text.strip())
+                )
+                await db.commit()
+                logger.info(f"Добавлен шаблон отклонения для {order_type}: {text[:50]}...")
+                return True
+            except Exception as e:
+                logger.error(f"Ошибка при добавлении шаблона отклонения: {e}")
+                return False
+
+    async def delete_rejection_template(self, template_id: int) -> bool:
+        """Удалить шаблонный комментарий для отклонения заказов"""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM rejection_templates WHERE id = ?",
+                (template_id,)
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def get_rejection_template(self, template_id: int) -> Optional[Dict[str, Any]]:
+        """Получить шаблонный комментарий по ID"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM rejection_templates WHERE id = ?",
+                (template_id,)
+            )
+            row = await cursor.fetchone()
+            return dict(row) if row else None
 
 
 # Глобальный экземпляр базы данных

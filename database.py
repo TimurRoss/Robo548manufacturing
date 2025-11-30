@@ -161,6 +161,11 @@ class Database:
                     await db.commit()
                     logger.info("Добавлено поле order_type в таблицу orders")
 
+                if 'quantity' not in columns:
+                    await db.execute("ALTER TABLE orders ADD COLUMN quantity INTEGER NOT NULL DEFAULT 1")
+                    await db.commit()
+                    logger.info("Добавлено поле quantity в таблицу orders")
+
                 cursor = await db.execute("PRAGMA table_info(materials)")
                 material_columns = [row[1] for row in await cursor.fetchall()]
 
@@ -395,7 +400,8 @@ class Database:
         photo_caption: Optional[str] = None,
         original_filename: str = "",
         comment: Optional[str] = None,
-        order_type: str = '3d_print'
+        order_type: str = '3d_print',
+        quantity: int = 1
     ) -> int:
         """Создать новый заказ"""
         async with aiosqlite.connect(self.db_path) as db:
@@ -408,9 +414,9 @@ class Database:
 
             cursor = await db.execute("""
                 INSERT INTO orders 
-                (user_id, status_id, material_id, part_name, photo_path, model_path, photo_caption, original_filename, comment, order_type)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (user_id, status_id, material_id, part_name, photo_path, model_path, photo_caption, original_filename, comment, order_type))
+                (user_id, status_id, material_id, part_name, photo_path, model_path, photo_caption, original_filename, comment, order_type, quantity)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (user_id, status_id, material_id, part_name, photo_path, model_path, photo_caption, original_filename, comment, order_type, quantity))
 
             await db.commit()
             order_id = cursor.lastrowid

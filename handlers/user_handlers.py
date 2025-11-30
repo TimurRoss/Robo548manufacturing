@@ -343,12 +343,52 @@ async def process_material_selection(callback: CallbackQuery, state: FSMContext)
     await state.update_data(material_id=material_id)
     
     await callback.message.edit_text(
+        "Выберите количество деталей:\n\n"
+        "Вы можете выбрать из предложенных вариантов или ввести количество вручную сообщением.",
+        reply_markup=keyboards.get_quantity_keyboard()
+    )
+    await state.set_state(states.OrderCreationStates.waiting_for_quantity)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("select_quantity:"), states.OrderCreationStates.waiting_for_quantity)
+async def process_quantity_selection(callback: CallbackQuery, state: FSMContext):
+    """Обработка выбора количества через кнопки"""
+    quantity = int(callback.data.split(":")[1])
+    await state.update_data(quantity=quantity)
+    
+    await callback.message.edit_text(
         "Хотите добавить комментарий к заказу?\n\n"
         "Напишите ваш комментарий или нажмите кнопку 'Пропустить':",
         reply_markup=keyboards.get_skip_comment_keyboard()
     )
     await state.set_state(states.OrderCreationStates.waiting_for_comment)
     await callback.answer()
+
+
+@router.message(states.OrderCreationStates.waiting_for_quantity)
+async def process_quantity_text(message: Message, state: FSMContext):
+    """Обработка ввода количества вручную"""
+    try:
+        quantity = int(message.text.strip())
+        if quantity <= 0:
+            await message.answer("Количество должно быть больше нуля. Введите количество деталей:")
+            return
+        if quantity > 100:
+            await message.answer("Количество не может превышать 100. Введите количество деталей:")
+            return
+    except ValueError:
+        await message.answer("Пожалуйста, введите число. Выберите количество из кнопок или введите число сообщением:")
+        return
+    
+    await state.update_data(quantity=quantity)
+    
+    await message.answer(
+        "Хотите добавить комментарий к заказу?\n\n"
+        "Напишите ваш комментарий или нажмите кнопку 'Пропустить':",
+        reply_markup=keyboards.get_skip_comment_keyboard()
+    )
+    await state.set_state(states.OrderCreationStates.waiting_for_comment)
 
 
 @router.message(states.OrderCreationStates.waiting_for_comment)
@@ -404,6 +444,7 @@ async def _show_order_summary(message_or_callback, state: FSMContext):
     part_name_html = html.escape(data['part_name'])
     material_name_html = html.escape(material_name)
     original_filename_html = html.escape(data['original_filename'])
+    quantity = data.get('quantity', 1)
     comment_text = data.get('comment')
     comment_html = html.escape(comment_text) if comment_text else None
 
@@ -412,6 +453,7 @@ async def _show_order_summary(message_or_callback, state: FSMContext):
         f"⚙️ Тип: {order_type_name_html}\n"
         f"👤 Заказчик: {user_full_name_html}\n"
         f"📦 Название детали: {part_name_html}\n"
+        f"🔢 Количество: {quantity} шт.\n"
         f"📷 Фото: прикреплено\n"
         f"📁 Модель: {original_filename_html}\n"
         "\n"
@@ -456,7 +498,8 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
             photo_caption=data.get('photo_caption'),
             original_filename=data['original_filename'],
             comment=data.get('comment'),
-            order_type=data.get('order_type', '3d_print')
+            order_type=data.get('order_type', '3d_print'),
+            quantity=data.get('quantity', 1)
         )
 
         # Уведомляем администраторов о новом заказе
@@ -466,10 +509,12 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
         order_type = data.get('order_type', '3d_print')
         order_type_name = config.ORDER_TYPES.get(order_type, "3D-печать")
 
+        quantity = data.get('quantity', 1)
         admin_message = (
             f"🆕 Новый заказ №{order_id}\n\n"
             f"⚙️ Тип: {order_type_name}\n"
             f"📦 Деталь: {data['part_name']}\n"
+            f"🔢 Количество: {quantity} шт.\n"
             f"🧪 Материал: {material_name}\n"
             f"👤 Клиент: {user['first_name']} {user['last_name']} (ID: {user['user_id']})\n"
         )
@@ -585,12 +630,14 @@ async def show_user_order_detail(callback: CallbackQuery):
     # Безопасное экранирование с проверкой на None
     created_at = order.get('created_at') or 'Не указана'
     part_name = order.get('part_name') or 'Не указано'
+    quantity = order.get('quantity', 1)
     
     order_text = (
         f"📋 Заказ №{order['id']}\n\n"
         f"📅 Дата создания: {html.escape(str(created_at))}\n"
         f"⚙️ Тип: {html.escape(order_type_name)}\n"
         f"📦 Название детали: {html.escape(str(part_name))}\n"
+        f"🔢 Количество: {quantity} шт.\n"
         f"📊 Статус: {html.escape(str(status_name))}\n"
         "\n"
         f"<b>Материал:</b>\n{html.escape(str(material_name))}"
@@ -924,12 +971,14 @@ async def show_user_archived_order_detail(callback: CallbackQuery):
     # Безопасное экранирование с проверкой на None
     created_at = order.get('created_at') or 'Не указана'
     part_name = order.get('part_name') or 'Не указано'
+    quantity = order.get('quantity', 1)
     
     order_text = (
         f"📋 Заказ №{order['id']}\n\n"
         f"📅 Дата создания: {html.escape(str(created_at))}\n"
         f"⚙️ Тип: {html.escape(order_type_name)}\n"
         f"📦 Название детали: {html.escape(str(part_name))}\n"
+        f"🔢 Количество: {quantity} шт.\n"
         f"📊 Статус: {html.escape(str(status_name))}\n"
         "\n"
         f"<b>Материал:</b>\n{html.escape(str(material_name))}"

@@ -34,6 +34,7 @@ async def notify_user_order_status_changed(bot: Bot, order: dict, status_name: s
             order_type_name = config.ORDER_TYPES.get(order_type_code, order_type_code)
             material_name = order.get('material_name') or "Не указан"
             part_name = order.get('part_name') or "Не указано"
+            quantity = order.get('quantity', 1)
             comment = order.get('comment')
             
             # Формируем сообщение с минимальными данными о заказе
@@ -41,6 +42,7 @@ async def notify_user_order_status_changed(bot: Bot, order: dict, status_name: s
                 f"❌ Заказ №{order_id} отклонен\n\n"
                 f"⚙️ Тип: {order_type_name}\n"
                 f"📦 Деталь: {part_name}\n"
+                f"🔢 Количество: {quantity} шт.\n"
                 f"🧪 Материал: {material_name}\n"
             )
             

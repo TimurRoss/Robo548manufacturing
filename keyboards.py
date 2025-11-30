@@ -65,6 +65,17 @@ def get_order_type_keyboard() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def get_quantity_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура выбора количества деталей"""
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(text="1 шт.", callback_data="select_quantity:1"))
+    builder.add(InlineKeyboardButton(text="2 шт.", callback_data="select_quantity:2"))
+    builder.add(InlineKeyboardButton(text="3 шт.", callback_data="select_quantity:3"))
+    builder.add(InlineKeyboardButton(text="5 шт.", callback_data="select_quantity:5"))
+    builder.adjust(2, 2)
+    return builder.as_markup()
+
+
 def get_admin_order_types_keyboard(order_stats: dict, archived_counts: dict) -> InlineKeyboardMarkup:
     """Клавиатура выбора типа заказов для админ-панели"""
     builder = InlineKeyboardBuilder()

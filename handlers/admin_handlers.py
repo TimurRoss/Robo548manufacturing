@@ -41,10 +41,12 @@ def _build_admin_new_order_summary(order: dict) -> str:
     else:
         customer = full_name
 
+    quantity = order.get('quantity', 1)
     summary = (
         f"🆕 Заказ №{order['id']}\n\n"
         f"⚙️ Тип: {order_type_name}\n"
         f"📦 Деталь: {order.get('part_name', '—')}\n"
+        f"🔢 Количество: {quantity} шт.\n"
         f"🧪 Материал: {material_name}\n"
         f"👤 Клиент: {customer} (ID: {order.get('user_id')})\n"
     )
@@ -82,6 +84,7 @@ def _build_admin_order_detail_payload(
         user_line = full_name_html
     user_info = f"{user_line}\n🆔 Telegram ID: {order['user_id']}"
 
+    quantity = order.get('quantity', 1)
     detail_text = (
         f"📋 Заказ №{order['id']}\n\n"
         f"📅 Дата создания: {html.escape(order.get('created_at', '—'))}\n"
@@ -99,6 +102,8 @@ def _build_admin_order_detail_payload(
         "\n"
         f"<b>Материал:</b>\n{html.escape(material_display)}"
     )
+
+    detail_text += f"\n\n<b>Количество:</b>\n{quantity} шт."
 
     if order.get('comment'):
         detail_text += f"\n\n<b>Комментарий:</b>\n{html.escape(order['comment'])}"

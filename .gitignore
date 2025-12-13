@@ -33,6 +33,8 @@ files/
 temp/
 logs/
 
+!files/menu_help.png
+
 # Config
 .env
 config_local.py

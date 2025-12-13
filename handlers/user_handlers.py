@@ -537,11 +537,74 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
             except Exception as notify_error:
                 logger.warning(f"Не удалось отправить уведомление админу {admin_id}: {notify_error}")
  
-        await callback.message.edit_text(
-            f"✅ Ваш заказ №{order_id} создан и принят в очередь!\n"
+        # Формируем сообщение для пользователя с информацией о заказе
+        user_message = (
+            f"✅ Ваш заказ №{order_id} создан и принят в очередь!\n\n"
+            f"📋 Заказ №{order_id}\n\n"
+            f"⚙️ Тип обработки: {order_type_name}\n"
+            f"🧪 Материал: {material_name}\n"
+            f"🔢 Количество: {quantity} шт.\n\n"
             f"Статус: 'В ожидании'.\n\n"
             f"Вы будете уведомлены об изменении статуса заказа."
         )
+        
+        # Добавляем кнопку для просмотра заказа
+        keyboard = keyboards.get_order_detail_keyboard(order_id, "pending", is_admin=False)
+        
+        # Проверяем наличие фото и отправляем его, если есть
+        photo_path = data.get('photo_path')
+        if photo_path and Path(photo_path).exists():
+            try:
+                photo_file = FSInputFile(photo_path)
+                # Удаляем старое сообщение и отправляем новое с фото
+                try:
+                    await callback.message.delete()
+                except Exception:
+                    pass  # Игнорируем ошибки при удалении
+                
+                await callback.bot.send_photo(
+                    callback.message.chat.id,
+                    photo_file,
+                    caption=user_message,
+                    reply_markup=keyboard
+                )
+            except Exception as e:
+                logger.error(f"Ошибка при отправке фото после создания заказа: {e}")
+                # Если не удалось отправить фото, отправляем просто текст
+                try:
+                    await callback.message.edit_text(
+                        user_message,
+                        reply_markup=keyboard
+                    )
+                except TelegramBadRequest:
+                    # Если сообщение не содержит текста, удаляем и отправляем новое
+                    try:
+                        await callback.message.delete()
+                    except Exception:
+                        pass
+                    await callback.bot.send_message(
+                        callback.message.chat.id,
+                        user_message,
+                        reply_markup=keyboard
+                    )
+        else:
+            # Если фото нет, редактируем сообщение как обычно
+            try:
+                await callback.message.edit_text(
+                    user_message,
+                    reply_markup=keyboard
+                )
+            except TelegramBadRequest:
+                # Если сообщение не содержит текста, удаляем и отправляем новое
+                try:
+                    await callback.message.delete()
+                except Exception:
+                    pass
+                await callback.bot.send_message(
+                    callback.message.chat.id,
+                    user_message,
+                    reply_markup=keyboard
+                )
         
         logger.info(f"Заказ №{order_id} создан пользователем {user_id}")
         
@@ -646,16 +709,73 @@ async def show_user_order_detail(callback: CallbackQuery):
     if order.get('comment'):
         order_text += f"\n\n<b>Комментарий:</b>\n{html.escape(str(order['comment']))}"
     
-    await callback.message.edit_text(
-        order_text,
-        reply_markup=keyboards.get_order_detail_keyboard(
-            order_id,
-            status_code,
-            is_admin=False,
-            extra_buttons=extra_buttons
-        ),
-        parse_mode="HTML"
+    keyboard = keyboards.get_order_detail_keyboard(
+        order_id,
+        status_code,
+        is_admin=False,
+        extra_buttons=extra_buttons
     )
+    
+    # Проверяем наличие фото и отправляем его, если есть
+    photo_path = order.get('photo_path')
+    if photo_path and Path(photo_path).exists():
+        try:
+            photo_file = FSInputFile(photo_path)
+            # Удаляем старое сообщение и отправляем новое с фото
+            try:
+                await callback.message.delete()
+            except Exception:
+                pass  # Игнорируем ошибки при удалении
+            
+            await callback.bot.send_photo(
+                callback.message.chat.id,
+                photo_file,
+                caption=order_text,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при отправке фото в деталях заказа: {e}")
+            # Если не удалось отправить фото, редактируем сообщение как обычно
+            try:
+                await callback.message.edit_text(
+                    order_text,
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )
+            except TelegramBadRequest:
+                # Если сообщение не содержит текста, удаляем и отправляем новое
+                try:
+                    await callback.message.delete()
+                except Exception:
+                    pass
+                await callback.bot.send_message(
+                    callback.message.chat.id,
+                    order_text,
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )
+    else:
+        # Если фото нет, редактируем сообщение как обычно
+        try:
+            await callback.message.edit_text(
+                order_text,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        except TelegramBadRequest:
+            # Если сообщение не содержит текста, удаляем и отправляем новое
+            try:
+                await callback.message.delete()
+            except Exception:
+                pass
+            await callback.bot.send_message(
+                callback.message.chat.id,
+                order_text,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+    
     await callback.answer()
 
 
@@ -1005,7 +1125,12 @@ async def show_user_archived_order_detail(callback: CallbackQuery):
     if photo_path and Path(photo_path).exists():
         try:
             photo_file = FSInputFile(photo_path)
-            await callback.message.delete()
+            # Удаляем старое сообщение и отправляем новое с фото
+            try:
+                await callback.message.delete()
+            except Exception:
+                pass  # Игнорируем ошибки при удалении
+            
             await callback.bot.send_photo(
                 callback.message.chat.id,
                 photo_file,
@@ -1014,18 +1139,46 @@ async def show_user_archived_order_detail(callback: CallbackQuery):
                 parse_mode="HTML"
             )
         except Exception as e:
-            logger.error(f"Ошибка при отправке фото: {e}")
+            logger.error(f"Ошибка при отправке фото в деталях архивного заказа: {e}")
+            # Если не удалось отправить фото, редактируем сообщение как обычно
+            try:
+                await callback.message.edit_text(
+                    order_text,
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )
+            except TelegramBadRequest:
+                # Если сообщение не содержит текста, удаляем и отправляем новое
+                try:
+                    await callback.message.delete()
+                except Exception:
+                    pass
+                await callback.bot.send_message(
+                    callback.message.chat.id,
+                    order_text,
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )
+    else:
+        # Если фото нет, редактируем сообщение как обычно
+        try:
             await callback.message.edit_text(
                 order_text,
                 reply_markup=keyboard,
                 parse_mode="HTML"
             )
-    else:
-        await callback.message.edit_text(
-            order_text,
-            reply_markup=keyboard,
-            parse_mode="HTML"
-        )
+        except TelegramBadRequest:
+            # Если сообщение не содержит текста, удаляем и отправляем новое
+            try:
+                await callback.message.delete()
+            except Exception:
+                pass
+            await callback.bot.send_message(
+                callback.message.chat.id,
+                order_text,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
     
     await callback.answer()
 

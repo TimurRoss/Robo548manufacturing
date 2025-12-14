@@ -50,7 +50,7 @@ async def notify_user_order_status_changed(bot: Bot, order: dict, status_name: s
             message += f"\n❌ Причина отклонения: {rejection_reason}"
             keyboard = keyboards.get_rejected_order_notification_keyboard()
         else:
-            message = f"{base_message}Ваш заказ переведен в статус '{status_name}'."
+            message = f"{base_message}\nВаш заказ переведен в статус '{status_name}'."
             keyboard = None
         
         # Проверяем наличие фото

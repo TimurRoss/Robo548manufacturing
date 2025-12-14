@@ -62,7 +62,7 @@ async def main():
     
     # Запускаем фоновую задачу для отправки напоминаний
     async def reminder_task():
-        """Фоновая задача для отправки напоминаний каждые 4 часа"""
+        """Фоновая задача для отправки напоминаний"""
         # Первая проверка сразу после запуска (через 1 минуту)
         await asyncio.sleep(60)
         
@@ -71,7 +71,7 @@ async def main():
                 logger.info("Проверка заказов для отправки напоминаний...")
                 
                 # Получаем заказы, которым нужно отправить напоминание
-                orders = await database.db.get_ready_orders_for_reminder(hours=4)
+                orders = await database.db.get_ready_orders_for_reminder(hours=config.REMINDER_INTERVAL_HOURS)
                 
                 for order in orders:
                     await send_reminder_about_ready_order(bot, order)
@@ -81,8 +81,8 @@ async def main():
                 else:
                     logger.debug("Заказов для напоминаний не найдено")
                 
-                # Ждем 4 часа перед следующей проверкой
-                await asyncio.sleep(4 * 3600)
+                # Ждем перед следующей проверкой (интервал из конфига)
+                await asyncio.sleep(config.REMINDER_INTERVAL_HOURS * 3600)
                     
             except Exception as e:
                 logger.error(f"Ошибка в задаче напоминаний: {e}")

@@ -53,15 +53,15 @@ async def cmd_start(message: Message, state: FSMContext):
         help_text = (
             f"Здравствуйте, {user['first_name']} {user['last_name']}!\n\n"
             "📋 <b>Подсказка по использованию меню:</b>\n\n"
-            "• <b>Создать заказ</b> - начать новый заказ на 3D печать или лазерную резку\n"
+            "• <b>Создать заказ 3д печать</b> - начать новый заказ на 3D печать\n"
+            "• <b>Создать заказ на лазерную резку</b> - начать новый заказ на лазерную резку\n"
             "• <b>Мои заказы</b> - просмотреть все ваши заказы и их статусы\n"
         )
         
         if user_id in config.ADMIN_IDS:
             help_text += "• <b>Админ-панель</b> - управление заказами и настройками\n"
-            help_text += "• <b>Рассылка</b> - отправка сообщений всем пользователям\n"
         
-        help_text += "\nВыберите действие из меню ниже:"
+        help_text += "\nВыберите действие из меню ниже(чтобы открыть меню кликните на кнопку, как на фото):"
         
         try:
             if menu_help_photo_path.exists():
@@ -130,9 +130,8 @@ async def process_last_name(message: Message, state: FSMContext):
 
 
 @router.message(Command("new_order"))
-@router.message(F.text == "Создать заказ")
 async def cmd_new_order(message: Message, state: FSMContext):
-    """Обработчик команды создания заказа"""
+    """Обработчик команды создания заказа (для обратной совместимости)"""
     user_id = message.from_user.id
     username = message.from_user.username
     
@@ -164,6 +163,84 @@ async def cmd_new_order(message: Message, state: FSMContext):
         "Начинаем создание заказа.\n\n"
         "Пожалуйста, выберите тип заказа:",
         reply_markup=keyboards.get_order_type_keyboard()
+    )
+
+
+@router.message(F.text == "Создать заказ 3д печать")
+async def cmd_new_order_3d_print(message: Message, state: FSMContext):
+    """Обработчик создания заказа на 3D печать"""
+    user_id = message.from_user.id
+    username = message.from_user.username
+    
+    # Проверяем регистрацию и обновляем username
+    if not await database.db.is_user_registered(user_id):
+        await message.answer("Пожалуйста, сначала зарегистрируйтесь через /start")
+        return
+    
+    if user_id not in config.ADMIN_IDS:
+        orders_enabled = await database.db.is_orders_enabled()
+        if not orders_enabled:
+            await message.answer(
+                "Приём новых заказов временно закрыт.\n"
+                "Пожалуйста, попробуйте позже или обратитесь к администратору."
+            )
+            return
+
+    # Обновляем username при создании заказа
+    await database.db.get_or_create_user(
+        user_id,
+        message.from_user.first_name or "",
+        message.from_user.last_name or "",
+        username
+    )
+    
+    await state.clear()
+    await state.update_data(order_type="3d_print")
+    order_type_name = config.ORDER_TYPES.get("3d_print", "3D-печать")
+    
+    await state.set_state(states.OrderCreationStates.waiting_for_photo)
+    await message.answer(
+        f"Вы выбрали: {order_type_name}.\n\n"
+        "Загрузите фото вашей модели (скриншот, чертеж):"
+    )
+
+
+@router.message(F.text == "Создать заказ на лазерную резку")
+async def cmd_new_order_laser_cut(message: Message, state: FSMContext):
+    """Обработчик создания заказа на лазерную резку"""
+    user_id = message.from_user.id
+    username = message.from_user.username
+    
+    # Проверяем регистрацию и обновляем username
+    if not await database.db.is_user_registered(user_id):
+        await message.answer("Пожалуйста, сначала зарегистрируйтесь через /start")
+        return
+    
+    if user_id not in config.ADMIN_IDS:
+        orders_enabled = await database.db.is_orders_enabled()
+        if not orders_enabled:
+            await message.answer(
+                "Приём новых заказов временно закрыт.\n"
+                "Пожалуйста, попробуйте позже или обратитесь к администратору."
+            )
+            return
+
+    # Обновляем username при создании заказа
+    await database.db.get_or_create_user(
+        user_id,
+        message.from_user.first_name or "",
+        message.from_user.last_name or "",
+        username
+    )
+    
+    await state.clear()
+    await state.update_data(order_type="laser_cut")
+    order_type_name = config.ORDER_TYPES.get("laser_cut", "Лазерная резка")
+    
+    await state.set_state(states.OrderCreationStates.waiting_for_photo)
+    await message.answer(
+        f"Вы выбрали: {order_type_name}.\n\n"
+        "Загрузите фото вашей заготовки или схемы (скриншот, чертеж):"
     )
 
 

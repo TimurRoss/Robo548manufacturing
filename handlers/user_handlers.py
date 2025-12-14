@@ -309,13 +309,15 @@ async def process_photo(message: Message, state: FSMContext):
     if order_type == "laser_cut":
         model_prompt = (
             "Фото получено!\n\n"
-            "Теперь загрузите файл модели для лазерной резки в формате DXF:"
+            "Теперь загрузите файл модели для лазерной резки в формате DXF.\n"
+            "Максимальный объем файла: 50 МБ"
         )
     else:
         allowed = ", ".join(sorted(ext.upper().lstrip(".") for ext in config.ALLOWED_MODEL_EXTENSIONS))
         model_prompt = (
             "Фото получено!\n\n"
-            f"Теперь загрузите файл 3D-модели в формате {allowed}:"
+            f"Теперь загрузите файл 3D-модели в формате {allowed}.\n"
+            "Максимальный объем файла: 50 МБ"
         )
     
     await message.answer(model_prompt)
@@ -346,7 +348,8 @@ async def process_model(message: Message, state: FSMContext):
         allowed_with_dot = ", ".join(sorted(ext for ext in allowed_extensions))
         await message.answer(
             "Неверный формат файла.\n\n"
-            f"Допустимы только файлы формата: {allowed_readable}.\n\n"
+            f"Допустимы только файлы формата: {allowed_readable}.\n"
+            "Максимальный объем файла: 50 МБ\n\n"
             f"Пожалуйста, загрузите файл с расширением {allowed_with_dot}:"
         )
         return
@@ -375,11 +378,17 @@ async def process_model_invalid(message: Message, state: FSMContext):
     order_type = data.get("order_type", "3d_print")
     
     if order_type == "laser_cut":
-        await message.answer("Пожалуйста, загрузите файл модели для лазерной резки (DXF):")
+        await message.answer(
+            "Пожалуйста, загрузите файл модели для лазерной резки (DXF).\n"
+            "Максимальный объем файла: 50 МБ"
+        )
         return
     
     allowed = ", ".join(sorted(ext.upper().lstrip(".") for ext in config.ALLOWED_MODEL_EXTENSIONS))
-    await message.answer(f"Пожалуйста, загрузите файл 3D-модели ({allowed}):")
+    await message.answer(
+        f"Пожалуйста, загрузите файл 3D-модели ({allowed}).\n"
+        "Максимальный объем файла: 50 МБ"
+    )
 
 
 @router.message(states.OrderCreationStates.waiting_for_part_name)

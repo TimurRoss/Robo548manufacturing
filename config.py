@@ -63,6 +63,12 @@ try:
 except ValueError:
     TIMEZONE_OFFSET_HOURS = 3.0
 
+# Интервал напоминаний (в часах) для готовых заказов - как часто отправлять напоминания пользователям
+try:
+    REMINDER_INTERVAL_HOURS = int(os.getenv("REMINDER_INTERVAL_HOURS", "4"))
+except ValueError:
+    REMINDER_INTERVAL_HOURS = 4
+
 # Контакты технических специалистов для решения проблем
 TECH_SUPPORT_CONTACTS = [
     {"name": "Россихн Тимур", "role": "Технический специалист", "contact": "@TimurRoss"},

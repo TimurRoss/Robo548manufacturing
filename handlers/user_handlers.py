@@ -53,15 +53,15 @@ async def cmd_start(message: Message, state: FSMContext):
         help_text = (
             f"Здравствуйте, {user['first_name']} {user['last_name']}!\n\n"
             "📋 <b>Подсказка по использованию меню:</b>\n\n"
-            "• <b>Создать заказ</b> - начать новый заказ на 3D печать или лазерную резку\n"
+            "• <b>Создать заказ 3д печать</b> - начать новый заказ на 3D печать\n"
+            "• <b>Создать заказ на лазерную резку</b> - начать новый заказ на лазерную резку\n"
             "• <b>Мои заказы</b> - просмотреть все ваши заказы и их статусы\n"
         )
         
         if user_id in config.ADMIN_IDS:
             help_text += "• <b>Админ-панель</b> - управление заказами и настройками\n"
-            help_text += "• <b>Рассылка</b> - отправка сообщений всем пользователям\n"
         
-        help_text += "\nВыберите действие из меню ниже:"
+        help_text += "\nВыберите действие из меню ниже(чтобы открыть меню кликните на кнопку, как на фото):"
         
         try:
             if menu_help_photo_path.exists():
@@ -130,9 +130,8 @@ async def process_last_name(message: Message, state: FSMContext):
 
 
 @router.message(Command("new_order"))
-@router.message(F.text == "Создать заказ")
 async def cmd_new_order(message: Message, state: FSMContext):
-    """Обработчик команды создания заказа"""
+    """Обработчик команды создания заказа (для обратной совместимости)"""
     user_id = message.from_user.id
     username = message.from_user.username
     
@@ -164,6 +163,84 @@ async def cmd_new_order(message: Message, state: FSMContext):
         "Начинаем создание заказа.\n\n"
         "Пожалуйста, выберите тип заказа:",
         reply_markup=keyboards.get_order_type_keyboard()
+    )
+
+
+@router.message(F.text == "Создать заказ 3д печать")
+async def cmd_new_order_3d_print(message: Message, state: FSMContext):
+    """Обработчик создания заказа на 3D печать"""
+    user_id = message.from_user.id
+    username = message.from_user.username
+    
+    # Проверяем регистрацию и обновляем username
+    if not await database.db.is_user_registered(user_id):
+        await message.answer("Пожалуйста, сначала зарегистрируйтесь через /start")
+        return
+    
+    if user_id not in config.ADMIN_IDS:
+        orders_enabled = await database.db.is_orders_enabled()
+        if not orders_enabled:
+            await message.answer(
+                "Приём новых заказов временно закрыт.\n"
+                "Пожалуйста, попробуйте позже или обратитесь к администратору."
+            )
+            return
+
+    # Обновляем username при создании заказа
+    await database.db.get_or_create_user(
+        user_id,
+        message.from_user.first_name or "",
+        message.from_user.last_name or "",
+        username
+    )
+    
+    await state.clear()
+    await state.update_data(order_type="3d_print")
+    order_type_name = config.ORDER_TYPES.get("3d_print", "3D-печать")
+    
+    await state.set_state(states.OrderCreationStates.waiting_for_photo)
+    await message.answer(
+        f"Вы выбрали: {order_type_name}.\n\n"
+        "Загрузите фото вашей модели (скриншот, чертеж):"
+    )
+
+
+@router.message(F.text == "Создать заказ на лазерную резку")
+async def cmd_new_order_laser_cut(message: Message, state: FSMContext):
+    """Обработчик создания заказа на лазерную резку"""
+    user_id = message.from_user.id
+    username = message.from_user.username
+    
+    # Проверяем регистрацию и обновляем username
+    if not await database.db.is_user_registered(user_id):
+        await message.answer("Пожалуйста, сначала зарегистрируйтесь через /start")
+        return
+    
+    if user_id not in config.ADMIN_IDS:
+        orders_enabled = await database.db.is_orders_enabled()
+        if not orders_enabled:
+            await message.answer(
+                "Приём новых заказов временно закрыт.\n"
+                "Пожалуйста, попробуйте позже или обратитесь к администратору."
+            )
+            return
+
+    # Обновляем username при создании заказа
+    await database.db.get_or_create_user(
+        user_id,
+        message.from_user.first_name or "",
+        message.from_user.last_name or "",
+        username
+    )
+    
+    await state.clear()
+    await state.update_data(order_type="laser_cut")
+    order_type_name = config.ORDER_TYPES.get("laser_cut", "Лазерная резка")
+    
+    await state.set_state(states.OrderCreationStates.waiting_for_photo)
+    await message.answer(
+        f"Вы выбрали: {order_type_name}.\n\n"
+        "Загрузите фото вашей заготовки или схемы (скриншот, чертеж):"
     )
 
 
@@ -232,13 +309,15 @@ async def process_photo(message: Message, state: FSMContext):
     if order_type == "laser_cut":
         model_prompt = (
             "Фото получено!\n\n"
-            "Теперь загрузите файл модели для лазерной резки в формате DXF:"
+            "Теперь загрузите файл модели для лазерной резки в формате DXF.\n"
+            "Максимальный объем файла: 50 МБ"
         )
     else:
         allowed = ", ".join(sorted(ext.upper().lstrip(".") for ext in config.ALLOWED_MODEL_EXTENSIONS))
         model_prompt = (
             "Фото получено!\n\n"
-            f"Теперь загрузите файл 3D-модели в формате {allowed}:"
+            f"Теперь загрузите файл 3D-модели в формате {allowed}.\n"
+            "Максимальный объем файла: 50 МБ"
         )
     
     await message.answer(model_prompt)
@@ -269,7 +348,8 @@ async def process_model(message: Message, state: FSMContext):
         allowed_with_dot = ", ".join(sorted(ext for ext in allowed_extensions))
         await message.answer(
             "Неверный формат файла.\n\n"
-            f"Допустимы только файлы формата: {allowed_readable}.\n\n"
+            f"Допустимы только файлы формата: {allowed_readable}.\n"
+            "Максимальный объем файла: 50 МБ\n\n"
             f"Пожалуйста, загрузите файл с расширением {allowed_with_dot}:"
         )
         return
@@ -298,11 +378,17 @@ async def process_model_invalid(message: Message, state: FSMContext):
     order_type = data.get("order_type", "3d_print")
     
     if order_type == "laser_cut":
-        await message.answer("Пожалуйста, загрузите файл модели для лазерной резки (DXF):")
+        await message.answer(
+            "Пожалуйста, загрузите файл модели для лазерной резки (DXF).\n"
+            "Максимальный объем файла: 50 МБ"
+        )
         return
     
     allowed = ", ".join(sorted(ext.upper().lstrip(".") for ext in config.ALLOWED_MODEL_EXTENSIONS))
-    await message.answer(f"Пожалуйста, загрузите файл 3D-модели ({allowed}):")
+    await message.answer(
+        f"Пожалуйста, загрузите файл 3D-модели ({allowed}).\n"
+        "Максимальный объем файла: 50 МБ"
+    )
 
 
 @router.message(states.OrderCreationStates.waiting_for_part_name)
@@ -537,11 +623,74 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
             except Exception as notify_error:
                 logger.warning(f"Не удалось отправить уведомление админу {admin_id}: {notify_error}")
  
-        await callback.message.edit_text(
-            f"✅ Ваш заказ №{order_id} создан и принят в очередь!\n"
+        # Формируем сообщение для пользователя с информацией о заказе
+        user_message = (
+            f"✅ Ваш заказ №{order_id} создан и принят в очередь!\n\n"
+            f"📋 Заказ №{order_id}\n\n"
+            f"⚙️ Тип обработки: {order_type_name}\n"
+            f"🧪 Материал: {material_name}\n"
+            f"🔢 Количество: {quantity} шт.\n\n"
             f"Статус: 'В ожидании'.\n\n"
             f"Вы будете уведомлены об изменении статуса заказа."
         )
+        
+        # Добавляем кнопку для просмотра заказа
+        keyboard = keyboards.get_order_detail_keyboard(order_id, "pending", is_admin=False)
+        
+        # Проверяем наличие фото и отправляем его, если есть
+        photo_path = data.get('photo_path')
+        if photo_path and Path(photo_path).exists():
+            try:
+                photo_file = FSInputFile(photo_path)
+                # Удаляем старое сообщение и отправляем новое с фото
+                try:
+                    await callback.message.delete()
+                except Exception:
+                    pass  # Игнорируем ошибки при удалении
+                
+                await callback.bot.send_photo(
+                    callback.message.chat.id,
+                    photo_file,
+                    caption=user_message,
+                    reply_markup=keyboard
+                )
+            except Exception as e:
+                logger.error(f"Ошибка при отправке фото после создания заказа: {e}")
+                # Если не удалось отправить фото, отправляем просто текст
+                try:
+                    await callback.message.edit_text(
+                        user_message,
+                        reply_markup=keyboard
+                    )
+                except TelegramBadRequest:
+                    # Если сообщение не содержит текста, удаляем и отправляем новое
+                    try:
+                        await callback.message.delete()
+                    except Exception:
+                        pass
+                    await callback.bot.send_message(
+                        callback.message.chat.id,
+                        user_message,
+                        reply_markup=keyboard
+                    )
+        else:
+            # Если фото нет, редактируем сообщение как обычно
+            try:
+                await callback.message.edit_text(
+                    user_message,
+                    reply_markup=keyboard
+                )
+            except TelegramBadRequest:
+                # Если сообщение не содержит текста, удаляем и отправляем новое
+                try:
+                    await callback.message.delete()
+                except Exception:
+                    pass
+                await callback.bot.send_message(
+                    callback.message.chat.id,
+                    user_message,
+                    reply_markup=keyboard
+                )
         
         logger.info(f"Заказ №{order_id} создан пользователем {user_id}")
         
@@ -646,16 +795,73 @@ async def show_user_order_detail(callback: CallbackQuery):
     if order.get('comment'):
         order_text += f"\n\n<b>Комментарий:</b>\n{html.escape(str(order['comment']))}"
     
-    await callback.message.edit_text(
-        order_text,
-        reply_markup=keyboards.get_order_detail_keyboard(
-            order_id,
-            status_code,
-            is_admin=False,
-            extra_buttons=extra_buttons
-        ),
-        parse_mode="HTML"
+    keyboard = keyboards.get_order_detail_keyboard(
+        order_id,
+        status_code,
+        is_admin=False,
+        extra_buttons=extra_buttons
     )
+    
+    # Проверяем наличие фото и отправляем его, если есть
+    photo_path = order.get('photo_path')
+    if photo_path and Path(photo_path).exists():
+        try:
+            photo_file = FSInputFile(photo_path)
+            # Удаляем старое сообщение и отправляем новое с фото
+            try:
+                await callback.message.delete()
+            except Exception:
+                pass  # Игнорируем ошибки при удалении
+            
+            await callback.bot.send_photo(
+                callback.message.chat.id,
+                photo_file,
+                caption=order_text,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при отправке фото в деталях заказа: {e}")
+            # Если не удалось отправить фото, редактируем сообщение как обычно
+            try:
+                await callback.message.edit_text(
+                    order_text,
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )
+            except TelegramBadRequest:
+                # Если сообщение не содержит текста, удаляем и отправляем новое
+                try:
+                    await callback.message.delete()
+                except Exception:
+                    pass
+                await callback.bot.send_message(
+                    callback.message.chat.id,
+                    order_text,
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )
+    else:
+        # Если фото нет, редактируем сообщение как обычно
+        try:
+            await callback.message.edit_text(
+                order_text,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        except TelegramBadRequest:
+            # Если сообщение не содержит текста, удаляем и отправляем новое
+            try:
+                await callback.message.delete()
+            except Exception:
+                pass
+            await callback.bot.send_message(
+                callback.message.chat.id,
+                order_text,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+    
     await callback.answer()
 
 
@@ -1005,7 +1211,12 @@ async def show_user_archived_order_detail(callback: CallbackQuery):
     if photo_path and Path(photo_path).exists():
         try:
             photo_file = FSInputFile(photo_path)
-            await callback.message.delete()
+            # Удаляем старое сообщение и отправляем новое с фото
+            try:
+                await callback.message.delete()
+            except Exception:
+                pass  # Игнорируем ошибки при удалении
+            
             await callback.bot.send_photo(
                 callback.message.chat.id,
                 photo_file,
@@ -1014,18 +1225,46 @@ async def show_user_archived_order_detail(callback: CallbackQuery):
                 parse_mode="HTML"
             )
         except Exception as e:
-            logger.error(f"Ошибка при отправке фото: {e}")
+            logger.error(f"Ошибка при отправке фото в деталях архивного заказа: {e}")
+            # Если не удалось отправить фото, редактируем сообщение как обычно
+            try:
+                await callback.message.edit_text(
+                    order_text,
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )
+            except TelegramBadRequest:
+                # Если сообщение не содержит текста, удаляем и отправляем новое
+                try:
+                    await callback.message.delete()
+                except Exception:
+                    pass
+                await callback.bot.send_message(
+                    callback.message.chat.id,
+                    order_text,
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )
+    else:
+        # Если фото нет, редактируем сообщение как обычно
+        try:
             await callback.message.edit_text(
                 order_text,
                 reply_markup=keyboard,
                 parse_mode="HTML"
             )
-    else:
-        await callback.message.edit_text(
-            order_text,
-            reply_markup=keyboard,
-            parse_mode="HTML"
-        )
+        except TelegramBadRequest:
+            # Если сообщение не содержит текста, удаляем и отправляем новое
+            try:
+                await callback.message.delete()
+            except Exception:
+                pass
+            await callback.bot.send_message(
+                callback.message.chat.id,
+                order_text,
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
     
     await callback.answer()
 

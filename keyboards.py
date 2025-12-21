@@ -10,9 +10,10 @@ import config
 def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
     """Главное меню для пользователей"""
     builder = ReplyKeyboardBuilder()
-    builder.add(KeyboardButton(text="Создать заказ"))
+    builder.add(KeyboardButton(text="Создать заказ 3д печать"))
+    builder.add(KeyboardButton(text="Создать заказ на лазерную резку"))
     builder.add(KeyboardButton(text="Мои заказы"))
-    builder.adjust(2)
+    builder.adjust(2, 1)
     return builder.as_markup(resize_keyboard=True)
 
 
@@ -20,9 +21,9 @@ def get_admin_menu_keyboard() -> ReplyKeyboardMarkup:
     """Главное меню для администраторов"""
     builder = ReplyKeyboardBuilder()
     builder.add(KeyboardButton(text="Админ-панель"))
-    builder.add(KeyboardButton(text="Создать заказ"))
+    builder.add(KeyboardButton(text="Создать заказ 3д печать"))
+    builder.add(KeyboardButton(text="Создать заказ на лазерную резку"))
     builder.add(KeyboardButton(text="Мои заказы"))
-    builder.add(KeyboardButton(text="Рассылка"))
     builder.adjust(2, 2)
     return builder.as_markup(resize_keyboard=True)
 

@@ -1540,12 +1540,51 @@ async def admin_picked_up_order(callback: CallbackQuery, state: FSMContext):
             f"• Всего (без архива): {stats.get('all', 0)} шт"
         )
 
-        await callback.message.edit_text(
+        message_text = (
             f"✅ Заказ №{order_id} перемещен в архив.\n\n"
             f"📦 Заказы — {order_type_name}\n\n"
-            f"{stats_text}\n\nВыберите раздел:",
-            reply_markup=keyboards.get_admin_orders_keyboard(stats, archived_count, order_type)
+            f"{stats_text}\n\nВыберите раздел:"
         )
+        keyboard = keyboards.get_admin_orders_keyboard(stats, archived_count, order_type)
+
+        # Проверяем, является ли сообщение фото, и обрабатываем соответственно
+        try:
+            if callback.message.content_type == 'photo':
+                # Если сообщение содержит фото, удаляем его и отправляем новое текстовое сообщение
+                try:
+                    await callback.message.delete()
+                except Exception:
+                    pass  # Игнорируем ошибки при удалении
+                await callback.bot.send_message(
+                    callback.message.chat.id,
+                    message_text,
+                    reply_markup=keyboard
+                )
+            else:
+                # Если сообщение текстовое, просто редактируем его
+                await callback.message.edit_text(
+                    message_text,
+                    reply_markup=keyboard
+                )
+        except TelegramBadRequest as e:
+            error_text = str(e)
+            if "no text in the message to edit" in error_text or "there is no text in the message to edit" in error_text:
+                # Если не удалось отредактировать, удаляем и отправляем новое
+                try:
+                    await callback.message.delete()
+                except Exception:
+                    pass
+                await callback.bot.send_message(
+                    callback.message.chat.id,
+                    message_text,
+                    reply_markup=keyboard
+                )
+            elif "message is not modified" in error_text:
+                # Игнорируем попытку изменить на тот же текст
+                pass
+            else:
+                raise
+
         logger.info(f"Администратор {callback.from_user.id} пометил заказ №{order_id} как полученный (перемещен в архив)")
     else:
         await callback.answer("Ошибка при архивировании заказа", show_alert=True)
